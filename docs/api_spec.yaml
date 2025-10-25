@@ -1,0 +1,180 @@
+openapi: 3.0.0
+info:
+  title: Distributed Synchronization System API
+  version: 1.0.0
+  description: REST API for distributed locks, queues, and cache operations
+
+servers:
+  - url: http://localhost:5000
+    description: Development server
+
+paths:
+  /locks/{lock_id}:
+    post:
+      summary: Acquire distributed lock
+      parameters:
+        - name: lock_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lock_type:
+                  type: string
+                  enum: [exclusive, shared]
+                timeout:
+                  type: integer
+                  description: Timeout in milliseconds
+      responses:
+        '200':
+          description: Lock acquired
+        '409':
+          description: Lock unavailable
+        '408':
+          description: Timeout
+
+    delete:
+      summary: Release distributed lock
+      parameters:
+        - name: lock_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lock released
+        '404':
+          description: Lock not found
+
+  /queue/{queue_id}/enqueue:
+    post:
+      summary: Enqueue message
+      parameters:
+        - name: queue_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                priority:
+                  type: integer
+      responses:
+        '201':
+          description: Message enqueued
+        '500':
+          description: Enqueue failed
+
+  /queue/{queue_id}/dequeue:
+    post:
+      summary: Dequeue message
+      parameters:
+        - name: queue_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Message dequeued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  priority:
+                    type: integer
+        '204':
+          description: Queue empty
+
+  /cache/{key}:
+    get:
+      summary: Get cached value
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cache hit
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: string
+        '404':
+          description: Cache miss
+
+    put:
+      summary: Set cached value
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value:
+                  type: string
+                ttl:
+                  type: integer
+      responses:
+        '200':
+          description: Value cached
+        '500':
+          description: Cache failed
+
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  role:
+                    type: string
+                    enum: [leader, follower, candidate]
+                  term:
+                    type: integer
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string

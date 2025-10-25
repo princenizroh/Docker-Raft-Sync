@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY .env.example .env
+
+RUN mkdir -p /app/data/queue
+
+EXPOSE 5000 5001
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import socket; s = socket.socket(); s.connect(('localhost', 5000)); s.close()" || exit 1
+
+# Use shell form to allow environment variable expansion
+CMD python -m src.nodes.base_node \
+    --node-id $NODE_ID \
+    --host $NODE_HOST \
+    --port $NODE_PORT \
+    --cluster-nodes $CLUSTER_NODES

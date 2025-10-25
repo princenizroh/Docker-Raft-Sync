@@ -180,7 +180,7 @@ pytest tests/integration/
 pytest tests/performance/
 
 # Run performance benchmarks
-locust -f benchmarks/load_test_scenarios.py
+locust -f benchmarks/benchmark_runner.py
 ```
 
 ## 📖 Documentation
@@ -192,7 +192,7 @@ locust -f benchmarks/load_test_scenarios.py
 
 ## 🎥 Video Demonstration
 
-[Link YouTube Video Demo] - Coming Soon
+
 
 ## 📈 Performance Metrics
 
@@ -213,12 +213,6 @@ locust -f benchmarks/load_test_scenarios.py
 - **Containerization**: Docker, Docker Compose
 - **Monitoring**: Prometheus (optional)
 
-## 👨‍💻 Author
-
-**[Nama Anda]**
-- NIM: [NIM Anda]
-- Email: [Email Anda]
-- GitHub: [GitHub Profile]
 
 ## 📝 License
 

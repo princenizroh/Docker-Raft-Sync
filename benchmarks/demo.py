@@ -183,14 +183,39 @@ async def run_demo_on_node(node_type, node_id, port):
 
 
 def main():
-    """Main entry point"""
+    """Main entry point - Demo Selector"""
     print("=" * 60)
-    print("Distributed Synchronization System - Demo")
+    print("Distributed Synchronization System - Demo Selector")
     print("=" * 60)
     print()
-    print("[INFO] Demo runs in STANDALONE mode (no cluster needed)")
-    print("  - Each demo creates its own independent node")
-    print("  - Demonstrates system capabilities without cluster")
+    print("Select demo mode:")
+    print()
+    print("  1. STANDALONE MODE (Recommended for testing)")
+    print("     - No cluster required")
+    print("     - Single independent node")
+    print("     - Quick and easy to run")
+    print()
+    print("  2. CLUSTER MODE (Production-like)")
+    print("     - Requires running cluster (start_cluster.py)")
+    print("     - Connects as 4th node to cluster")
+    print("     - Demonstrates distributed consensus")
+    print()
+    
+    mode_choice = input("Enter mode (1-2): ").strip()
+    
+    if mode_choice == "1":
+        print("\n[STARTING STANDALONE MODE]")
+        import benchmarks.demo_standalone as standalone
+        standalone.main()
+        return
+    elif mode_choice == "2":
+        print("\n[STARTING CLUSTER MODE]")
+        import benchmarks.demo_cluster as cluster
+        cluster.main()
+        return
+    
+    print("\n[FALLBACK TO STANDALONE MODE]")
+    print("Invalid choice, showing demo type selection...")
     print()
     print("Select demo type:")
     print("  1. Distributed Lock Manager")

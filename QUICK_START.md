@@ -47,33 +47,54 @@ Select demo type:
 
 ---
 
-### Option 2: Cluster Mode (Production-like)
+### Option 2: Cluster Mode (DEPRECATED - NOT WORKING)
 
-**Using PowerShell script (easiest):**
-```bash
-.\run_cluster_demo.ps1
+**⚠️ WARNING: CLUSTER MODE TIDAK BERFUNGSI karena architectural limitation!**
+
+**Masalah:**
+- Demo creates node ke-4 yang join ke 3-node cluster
+- 4-node cluster needs 3/4 votes untuk majority
+- Demo node **TIDAK BISA dapat 3 votes** (cluster nodes don't recognize it)
+- Result: **Perpetual elections**, never becomes leader
+- All commands **GAGAL**: "Not leader, cannot submit command"
+
+**Root Cause:**
+- `DistributedLockManager`, `DistributedQueue`, `DistributedCache` adalah **FULL RAFT NODES**
+- Demo tries to join sebagai voting member
+- Raft doesn't support dynamic membership di implementation ini
+- Node ke-4 tidak ter-configure di cluster nodes
+
+**Why This Happens:**
 ```
-This script automatically:
-- Kills old Python processes
-- Starts 3-node cluster in background
-- Runs demo and connects to cluster
-- Cleans up when done
+Cluster: [node-1, node-2, node-3]  ← 3 nodes, majority = 2
+Demo:    demo-node tries to join   ← Makes it 4 nodes, majority = 3
 
-**Manual method:**
-
-**Terminal 1 - Start Cluster:**
-```bash
-# Kill old processes first!
-Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
-
-# Start cluster
-python benchmarks/start_cluster.py
+Election:
+  demo-node: votes for self (1 vote)
+  node-1:    doesn't vote for demo (not in its cluster list)
+  node-2:    doesn't vote for demo (not in its cluster list)
+  node-3:    doesn't vote for demo (not in its cluster list)
+  
+Result: demo-node gets 1/3 votes → NOT MAJORITY → Never becomes leader
 ```
 
-**Terminal 2 - Run Demo:**
+**Solusi Yang Diperlukan (Future Work):**
+1. Client API (kirim commands ke leader, bukan jadi node sendiri)
+2. Command forwarding (non-leader nodes forward ke leader)
+3. Dynamic membership (cluster accept new nodes runtime)
+
+**Pakai Standalone Mode sebagai gantinya:**
 ```bash
-python benchmarks/demo_cluster.py
+python benchmarks/demo_standalone.py
+# atau
+.\run_standalone_demo.ps1
 ```
+
+---
+
+### ~~Option 2: Cluster Mode (Production-like)~~ DEPRECATED
+
+**Jangan gunakan cluster mode!** Script ini exists untuk demonstrasi masalah architectural, bukan untuk actual usage.
 
 Select demo type (1/2/3)
 

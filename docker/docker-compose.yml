@@ -50,7 +50,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: curl -s -f http://localhost:6000/status || exit 1
+      test: curl -s -f -o /dev/null http://localhost:6000/status || exit 1
       interval: 10s
       timeout: 10s
       retries: 5
@@ -92,7 +92,7 @@ services:
       node1:
         condition: service_healthy
     healthcheck:
-      test: curl -s -f http://localhost:6010/status || exit 1
+      test: curl -s -f -o /dev/null http://localhost:6010/status || exit 1
       interval: 10s
       timeout: 10s
       retries: 5
@@ -134,7 +134,7 @@ services:
       node2:
         condition: service_healthy
     healthcheck:
-      test: curl -s -f http://localhost:6020/status || exit 1
+      test: curl -s -f -o /dev/null http://localhost:6020/status || exit 1
       interval: 10s
       timeout: 10s
       retries: 5

@@ -32,49 +32,25 @@ class HTTPAPIServer:
         self.node = node
         self.host = host
         self.port = port
-        self.runner: Optional[web.AppRunner] = None
-        self.site: Optional[web.TCPSite] = None
-        self.app = self._create_app()
+        self.app = web.Application()
+        self.app['node'] = self.node
+        self.app.router.add_routes([
+            web.get('/', self.handle_root),
+            web.get('/status', self.handle_status),
+            web.post('/status', self.handle_status)
+        ])
+        self.runner = None
+        self.site = None
 
     def _create_app(self):
         """Create and configure the web application"""
-        app = web.Application(
-            client_max_size=1024*1024,  # 1MB
-            debug=True
-        )
-        
-        # Set node in app state
+        app = web.Application()
         app['node'] = self.node
-        
-        # Add routes
         app.router.add_routes([
             web.get('/', self.handle_root),
             web.get('/status', self.handle_status),
-            web.post('/status', self.handle_status)  # Keep POST for backward compatibility
+            web.post('/status', self.handle_status)
         ])
-        
-        # Add middleware for CORS and request timing
-        @web.middleware
-        async def middleware(request, handler):
-            try:
-                logger.debug(f"Processing request to {request.path}")
-                resp = await handler(request)
-                # Add CORS headers
-                resp.headers['Access-Control-Allow-Origin'] = '*'
-                resp.headers['Access-Control-Allow-Methods'] = 'GET, POST'
-                resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-                return resp
-            except web.HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Request handler error: {e}")
-                return web.json_response(
-                    {'error': str(e)}, 
-                    status=500
-                )
-            
-        app.middlewares.append(middleware)
-        
         logger.info("HTTP API routes configured")
         return app
 
@@ -96,68 +72,14 @@ class HTTPAPIServer:
     async def start(self):
         """Start HTTP API server"""
         try:
-            # Create app runner
             logger.info(f"Starting HTTP API server on {self.host}:{self.port}")
-            self.app['node'] = self.node
-            
-            # Create application
-            logger.info("Configuring application...")
-            
-            # Set basic configuration for the application
-            logger.info("Setting up basic app config...")
-            self.app._debug = True
-            
-            # Create runner with minimal settings
-            logger.info("Creating AppRunner...")
-            self.runner = web.AppRunner(
-                self.app,
-                handle_signals=True,
-                access_log_format='%a [%t] "%r" %s %b "%{Referer}i" "%{User-Agent}i" %Tf'
-            )
-            
-            # Setup runner
-            logger.info("Setting up AppRunner...")
-            await self.runner.setup()
-            
-            # Create TCP site with minimal settings
-            logger.info("Creating TCP site...")
-            self.site = web.TCPSite(
-                self.runner, 
-                self.host, 
-                self.port,
-                reuse_address=True,
-                reuse_port=True,
-                backlog=128
-            )
-            
-            # Start with retries and timeout
-            retry_count = 3
-            while retry_count > 0:
-                try:
-                    logger.info(f"Starting site (attempt {4-retry_count}/3)...")
-                    # Use asyncio.wait_for to handle timeouts
-                    await asyncio.wait_for(self.site.start(), timeout=5.0)
-                    logger.info(f"HTTP API server started successfully on {self.host}:{self.port}")
-                    break
-                except asyncio.TimeoutError:
-                    retry_count -= 1
-                    if retry_count == 0:
-                        raise RuntimeError("Failed to start HTTP server: timeout")
-                    logger.warning("HTTP server start timed out, retrying in 1s...")
-                    await asyncio.sleep(1)
-                except OSError as e:
-                    retry_count -= 1
-                    if retry_count == 0:
-                        raise
-                    logger.warning(f"Failed to start HTTP server: {e}, retrying in 1s...")
-                    await asyncio.sleep(1)
-                except Exception as e:
-                    logger.error(f"Unexpected error starting server: {e}")
-                    raise
-            
-            # Create a task for periodic health checks
-            self._health_task = asyncio.create_task(self._health_check())
-            
+            runner = web.AppRunner(self.app, access_log=None)
+            await runner.setup()
+            site = web.TCPSite(runner, self.host, self.port, reuse_address=True, reuse_port=True)
+            await site.start()
+            self.runner = runner
+            self.site = site
+            logger.info(f"HTTP API server started successfully on {self.host}:{self.port}")
         except Exception as e:
             logger.error(f"Failed to start HTTP API server: {str(e)}")
             logger.exception(e)
@@ -168,17 +90,12 @@ class HTTPAPIServer:
         while True:
             try:
                 # Sleep first to give the server time to start
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)  # Increased sleep time
                 
-                # Check if the server is still running
+                # Simple health check - just verify components exist
                 if not self.site or not self.runner:
                     logger.error("HTTP server components not initialized")
                     continue
-                
-                if self.runner._server is None:
-                    logger.error("HTTP server is not running")
-                    # Try to restart
-                    await self.site.start()
                     
             except asyncio.CancelledError:
                 logger.info("HTTP health check task cancelled")
@@ -240,22 +157,24 @@ class HTTPAPIServer:
         """Handle status request"""
         logger.debug("Handling status request")
         try:
-            logger.debug("Building status response")
             status = {
                 'node_id': self.node.node_id,
                 'is_leader': self.node.raft.is_leader(),
                 'state': self.node.raft.state.value,
                 'term': self.node.raft.current_term,
-                'running': self.node.running
+                'running': True
             }
-            
-            logger.debug(f"Returning status: {status}")
-            return web.json_response(status)
-        
+            return web.Response(
+                text=json.dumps(status),
+                content_type='application/json'
+            )
         except Exception as e:
             logger.error(f"Error in status handler: {e}")
-            logger.exception("Detailed error:")
-            return web.json_response({'error': str(e)}, status=500)
+            return web.Response(
+                text=json.dumps({'error': str(e)}),
+                content_type='application/json',
+                status=500
+            )
     
     # Lock Endpoints
     

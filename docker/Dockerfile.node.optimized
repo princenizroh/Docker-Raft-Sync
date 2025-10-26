@@ -1,0 +1,55 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    python3-dev \
+    libuv1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+# Add uvloop to requirements
+RUN echo "uvloop>=0.17.0" >> requirements.txt
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY .env.example .env
+
+RUN mkdir -p /app/data/queue
+
+EXPOSE 5000 5001 6000
+
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python -c "import http.client, os; port = os.environ.get('API_PORT', '6000'); c = http.client.HTTPConnection('localhost', int(port)); c.request('GET', '/status'); r = c.getresponse(); assert r.status == 200" || exit 1
+
+# Properly set PYTHONPATH and install uvloop optimally
+ENV PYTHONPATH=/app
+ENV PYTHONASYNCIODEBUG=1
+ENV PYTHONUNBUFFERED=1
+
+# Create entrypoint script for proper initialization
+COPY <<EOF /app/entrypoint.py
+import uvloop
+import asyncio
+import os
+import sys
+
+# Install uvloop as the default event loop
+uvloop.install()
+
+# Run the main module
+if __name__ == '__main__':
+    os.environ['PYTHONPATH'] = '/app'
+    sys.path.insert(0, '/app')
+    from src.nodes.base_node import main
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+EOF
+
+CMD ["python", "entrypoint.py"]

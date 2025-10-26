@@ -11,6 +11,11 @@ services:
     command: redis-server --appendonly yes
     networks:
       - distributed-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
 
   # Node 1
   node1:
@@ -18,6 +23,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.node
     container_name: dist-node-1
+    hostname: dist-node-1
     environment:
       - NODE_ID=node-1
       - NODE_HOST=0.0.0.0
@@ -30,13 +36,25 @@ services:
       - API_HOST=0.0.0.0
       - API_PORT=6000
     ports:
-      - "6000:6000"  # HTTP API port on container matches exposed host port
+      - target: 6000
+        published: 6000
+        protocol: tcp
+        mode: host
     volumes:
       - node1_data:/app/data
     networks:
-      - distributed-net
+      distributed-net:
+        aliases:
+          - dist-node-1
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: curl -s -f http://localhost:6000/status || exit 1
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   # Node 2
@@ -45,6 +63,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.node
     container_name: dist-node-2
+    hostname: dist-node-2
     environment:
       - NODE_ID=node-2
       - NODE_HOST=0.0.0.0
@@ -57,13 +76,27 @@ services:
       - API_HOST=0.0.0.0
       - API_PORT=6010
     ports:
-      - "6010:6010"  # HTTP API port on container matches exposed host port
+      - target: 6010
+        published: 6010
+        protocol: tcp
+        mode: host
     volumes:
       - node2_data:/app/data
     networks:
-      - distributed-net
+      distributed-net:
+        aliases:
+          - dist-node-2
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      node1:
+        condition: service_healthy
+    healthcheck:
+      test: curl -s -f http://localhost:6010/status || exit 1
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   # Node 3
@@ -72,6 +105,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.node
     container_name: dist-node-3
+    hostname: dist-node-3
     environment:
       - NODE_ID=node-3
       - NODE_HOST=0.0.0.0
@@ -84,13 +118,27 @@ services:
       - API_HOST=0.0.0.0
       - API_PORT=6020
     ports:
-      - "6020:6020"  # HTTP API port on container matches exposed host port
+      - target: 6020
+        published: 6020
+        protocol: tcp
+        mode: host
     volumes:
       - node3_data:/app/data
     networks:
-      - distributed-net
+      distributed-net:
+        aliases:
+          - dist-node-3
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+    healthcheck:
+      test: curl -s -f http://localhost:6020/status || exit 1
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
 networks:

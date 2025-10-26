@@ -27,19 +27,24 @@ class BaseNode:
     Base distributed node that combines all core components
     """
     
-    def __init__(self, node_id: str, host: str, port: int, cluster_nodes: list):
+    def __init__(self, node_id: str, host: str, port: int, cluster_nodes: list, enable_http_api: bool = None):
         self.node_id = node_id
         self.host = host
         self.port = port
         self.cluster_nodes = cluster_nodes
         
+        # Get enable_http_api from config if not provided explicitly
+        config = get_config()
+        self.enable_http_api = enable_http_api if enable_http_api is not None else config.api.enable_http_api
+        logger.info(f"HTTP API enabled: {self.enable_http_api} (explicit={enable_http_api}, config={config.api.enable_http_api})")
+        
         # Initialize components
         self.message_passing = MessagePassing(node_id, host, port)
         self.failure_detector = FailureDetector(
             node_id=node_id,
-            heartbeat_interval=1.0,
-            suspicion_threshold=3,
-            failure_threshold=5
+            heartbeat_interval=2.0,
+            suspicion_threshold=6,
+            failure_threshold=10
         )
         self.raft = RaftNode(
             node_id=node_id,
@@ -48,6 +53,28 @@ class BaseNode:
             election_timeout_max=300,
             heartbeat_interval=50
         )
+        
+        # HTTP API Server (optional)
+        logger.debug("Checking HTTP API configuration...")
+        self.http_server = None
+        if enable_http_api:
+            logger.debug("HTTP API is enabled, proceeding with initialization")
+            try:
+                logger.debug("Importing HTTPAPIServer...")
+                from ..api.http_server import HTTPAPIServer
+                
+                # Get API settings from config
+                api_host = config.api.api_host
+                api_port = config.api.api_port
+                logger.info(f"Initializing HTTP API server on {api_host}:{api_port}")
+                
+                logger.debug("Creating HTTPAPIServer instance...")
+                self.http_server = HTTPAPIServer(self, api_host, api_port)
+                logger.info(f"HTTP API server initialized at http://{api_host}:{api_port}")
+            except Exception as e:
+                logger.error(f"Failed to initialize HTTP API server: {str(e)}")
+                logger.exception(e)
+                self.http_server = None  # Reset on failure
         
         # State
         self.running = False
@@ -89,6 +116,10 @@ class BaseNode:
             MessageType.PING.value,
             self._handle_ping
         )
+        self.message_passing.register_handler(
+            MessageType.PONG.value,
+            self._handle_pong
+        )
     
     def _setup_raft_callbacks(self):
         """Setup Raft callbacks"""
@@ -116,6 +147,21 @@ class BaseNode:
         await self.failure_detector.start()
         await self.raft.start()
         
+        # Start HTTP API server if enabled
+        logger.debug("Checking if HTTP API server should be started...")
+        if self.http_server:
+            logger.info("Starting HTTP API server...")
+            try:
+                logger.debug("Calling HTTP server start method...")
+                await self.http_server.start()
+                logger.info(f"HTTP API server is now listening at http://{self.http_server.host}:{self.http_server.port}")
+            except Exception as e:
+                logger.error(f"Failed to start HTTP API server: {str(e)}")
+                logger.exception(e)
+                self.http_server = None  # Reset on failure
+        else:
+            logger.debug("HTTP API server is not enabled or failed to initialize")
+        
         # Start heartbeat sender
         asyncio.create_task(self._heartbeat_sender())
         
@@ -129,6 +175,10 @@ class BaseNode:
         """Stop the node"""
         logger.info(f"Stopping node {self.node_id}...")
         self.running = False
+        
+        # Stop HTTP API server if enabled
+        if self.http_server:
+            await self.http_server.stop()
         
         # Stop components
         await self.raft.stop()
@@ -172,6 +222,11 @@ class BaseNode:
                 await asyncio.sleep(1.0)
     
     # Raft message handlers
+    async def _handle_pong(self, message: Message):
+        """Handle Pong message"""
+        # Record heartbeat for failure detector
+        self.failure_detector.record_heartbeat(message.sender_id)
+
     async def _handle_request_vote(self, message: Message):
         """Handle RequestVote message"""
         with PerformanceTimer(self.metrics, 'request_vote_handling_time'):
@@ -311,41 +366,79 @@ class BaseNode:
 async def main():
     """Main entry point for running a node"""
     import argparse
+    import signal
     
     parser = argparse.ArgumentParser(description='Run a distributed node')
     parser.add_argument('--node-id', required=True, help='Node ID')
     parser.add_argument('--host', default='0.0.0.0', help='Host address')
     parser.add_argument('--port', type=int, required=True, help='Port number')
     parser.add_argument('--cluster-nodes', required=True, help='Comma-separated list of cluster nodes (id:host:port)')
+    parser.add_argument('--enable-http-api', action='store_true', help='Enable HTTP API server')
     
     args = parser.parse_args()
     
     cluster_nodes = args.cluster_nodes.split(',')
     
+    # Create node instance
     node = BaseNode(
         node_id=args.node_id,
         host=args.host,
         port=args.port,
-        cluster_nodes=cluster_nodes
+        cluster_nodes=cluster_nodes,
+        enable_http_api=args.enable_http_api
     )
     
+    # Event for graceful shutdown
+    shutdown_event = asyncio.Event()
+    
+    # Prepare shutdown handler
+    def handle_signal(sig):
+        """Signal handler"""
+        logger.info(f"Received signal {sig}, initiating shutdown...")
+        shutdown_event.set()
+    
     try:
+        # Setup signal handlers
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda s, _: handle_signal(s))
+        
+        # Start node
         await node.start()
         
-        # Keep running
-        while True:
-            await asyncio.sleep(1)
-            
-            # Print status every 10 seconds
-            if int(asyncio.get_event_loop().time()) % 10 == 0:
-                status = node.get_status()
-                logger.info(f"Status: {status['raft']}")
+        # Run until shutdown signal
+        while not shutdown_event.is_set():
+            try:
+                await asyncio.sleep(1)
+                
+                # Print status every 10 seconds
+                if int(asyncio.get_running_loop().time()) % 10 == 0:
+                    status = node.get_status()
+                    logger.info(f"Status: {status['raft']}")
+            except asyncio.CancelledError:
+                break
     
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        logger.exception(e)
     finally:
-        await node.stop()
+        logger.info("Cleaning up...")
+        try:
+            await node.stop()
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+            logger.exception(e)
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        # Try to use uvloop if available
+        import uvloop
+        uvloop.install()
+        logger.info("Using uvloop event loop")
+    except ImportError:
+        logger.warning("uvloop not available, using default event loop")
+    
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass  # Handle Ctrl+C gracefully

@@ -5,9 +5,14 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    python3-dev \
+    libuv1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+
+# Add uvloop to requirements
+RUN echo "uvloop>=0.17.0" >> requirements.txt
 
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -16,14 +21,15 @@ COPY .env.example .env
 
 RUN mkdir -p /app/data/queue
 
-EXPOSE 5000 5001
+EXPOSE 5000 5001 6000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import socket; s = socket.socket(); s.connect(('localhost', 5000)); s.close()" || exit 1
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python -c "import http.client, os; port = os.environ.get('API_PORT', '6000'); c = http.client.HTTPConnection('localhost', int(port)); c.request('GET', '/status'); r = c.getresponse(); assert r.status == 200" || exit 1
 
 # Use shell form to allow environment variable expansion
 CMD python -m src.nodes.base_node \
     --node-id $NODE_ID \
     --host $NODE_HOST \
     --port $NODE_PORT \
-    --cluster-nodes $CLUSTER_NODES
+    --cluster-nodes $CLUSTER_NODES \
+    ${ENABLE_HTTP_API:+"--enable-http-api"}

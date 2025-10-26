@@ -23,12 +23,14 @@ services:
       - NODE_HOST=0.0.0.0
       - NODE_PORT=5000
       - NODE_CLUSTER_PORT=5001
-      - CLUSTER_NODES=node-1:node1:5000,node-2:node2:5000,node-3:node3:5000
+      - CLUSTER_NODES=node-1:dist-node-1:5000,node-2:dist-node-2:5000,node-3:dist-node-3:5000
       - REDIS_HOST=redis
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=DEBUG
+      - ENABLE_HTTP_API=true
+      - API_HOST=0.0.0.0
+      - API_PORT=6000
     ports:
-      - "5000:5000"
-      - "5001:5001"
+      - "6000:6000"  # HTTP API port on container matches exposed host port
     volumes:
       - node1_data:/app/data
     networks:
@@ -48,12 +50,14 @@ services:
       - NODE_HOST=0.0.0.0
       - NODE_PORT=5000
       - NODE_CLUSTER_PORT=5001
-      - CLUSTER_NODES=node-1:node1:5000,node-2:node2:5000,node-3:node3:5000
+      - CLUSTER_NODES=node-1:dist-node-1:5000,node-2:dist-node-2:5000,node-3:dist-node-3:5000
       - REDIS_HOST=redis
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=DEBUG
+      - ENABLE_HTTP_API=true
+      - API_HOST=0.0.0.0
+      - API_PORT=6010
     ports:
-      - "5010:5000"
-      - "5011:5001"
+      - "6010:6010"  # HTTP API port on container matches exposed host port
     volumes:
       - node2_data:/app/data
     networks:
@@ -73,12 +77,14 @@ services:
       - NODE_HOST=0.0.0.0
       - NODE_PORT=5000
       - NODE_CLUSTER_PORT=5001
-      - CLUSTER_NODES=node-1:node1:5000,node-2:node2:5000,node-3:node3:5000
+      - CLUSTER_NODES=node-1:dist-node-1:5000,node-2:dist-node-2:5000,node-3:dist-node-3:5000
       - REDIS_HOST=redis
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=DEBUG
+      - ENABLE_HTTP_API=true
+      - API_HOST=0.0.0.0
+      - API_PORT=6020
     ports:
-      - "5020:5000"
-      - "5021:5001"
+      - "6020:6020"  # HTTP API port on container matches exposed host port
     volumes:
       - node3_data:/app/data
     networks:

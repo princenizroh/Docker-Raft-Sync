@@ -88,6 +88,13 @@ class PerformanceConfig:
 
 
 @dataclass
+class APIConfig:
+    """API Server configuration"""
+    enable_http_api: bool = field(default_factory=lambda: os.getenv('ENABLE_HTTP_API', 'false').lower() == 'true')
+    api_host: str = field(default_factory=lambda: os.getenv('API_HOST', '0.0.0.0'))
+    api_port: int = field(default_factory=lambda: int(os.getenv('API_PORT', '6000')))
+
+@dataclass
 class DevelopmentConfig:
     """Development and debugging configuration"""
     debug_mode: bool = field(default_factory=lambda: os.getenv('DEBUG_MODE', 'false').lower() == 'true')
@@ -107,6 +114,7 @@ class SystemConfig:
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     development: DevelopmentConfig = field(default_factory=DevelopmentConfig)
+    api: APIConfig = field(default_factory=APIConfig)
 
 
 # Global configuration instance

@@ -56,7 +56,8 @@ class RaftNode:
         heartbeat_interval: int = 50
     ):
         self.node_id = node_id
-        self.cluster_nodes = [n for n in cluster_nodes if n != node_id]
+        # Filter out this node from cluster - handle both "nodeX" and "nodeX:host:port" formats
+        self.cluster_nodes = [n for n in cluster_nodes if not n.startswith(f"{node_id}:") and n != node_id]
         self.election_timeout_min = election_timeout_min
         self.election_timeout_max = election_timeout_max
         self.heartbeat_interval = heartbeat_interval
@@ -347,10 +348,22 @@ class RaftNode:
         if term > self.current_term:
             await self._update_term(term)
         
-        # Reset election timer
+        # Reject if term is old
+        if term < self.current_term:
+            # Send failure response
+            if self.message_sender:
+                await self.message_sender(leader_id, {
+                    'type': 'append_entries_response',
+                    'term': self.current_term,
+                    'success': False,
+                    'match_index': 0
+                })
+            return
+        
+        # Reset election timer (we have a valid leader)
         self.last_heartbeat = time.time()
         
-        # Become follower if we're not
+        # Become follower if we're not (and term is valid)
         if self.state != RaftState.FOLLOWER:
             await self._transition_to_follower()
         

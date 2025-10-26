@@ -62,8 +62,8 @@ class DistributedLockManager(BaseNode):
     Extends BaseNode to use Raft consensus for lock coordination
     """
     
-    def __init__(self, node_id: str, host: str, port: int, cluster_nodes: list):
-        super().__init__(node_id, host, port, cluster_nodes)
+    def __init__(self, node_id: str, host: str, port: int, cluster_nodes: list, enable_http_api: bool = False):
+        super().__init__(node_id, host, port, cluster_nodes, enable_http_api=enable_http_api)
         
         self.locks: Dict[str, Lock] = {}
         self.held_locks: Dict[str, Set[str]] = defaultdict(set)  

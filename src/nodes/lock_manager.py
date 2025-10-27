@@ -30,6 +30,12 @@ class LockStatus(Enum):
     DENIED = "denied"
 
 
+class DeadlockError(Exception):
+    """Raised when a deadlock is detected"""
+    pass
+
+
+
 @dataclass
 class LockRequest:
     """Lock request information"""
@@ -129,6 +135,13 @@ class DistributedLockManager(BaseNode):
         logger.info(f"Lock request submitted for {resource_id} by {requester_id}, waiting...")
         start_time = time.time()
         while time.time() - start_time < timeout:
+            # Check for deadlocks
+            deadlocks = self._detect_deadlocks()
+            if deadlocks:
+                self.metrics.increment_counter('deadlocks_detected')
+                logger.warning(f"Deadlock detected for {requester_id} requesting {resource_id}")
+                raise DeadlockError(f"Deadlock detected - cycles: {deadlocks}")
+                
             if self._is_lock_held(requester_id, resource_id):
                 self.metrics.increment_counter('locks_acquired')
                 logger.info(f"Lock acquired: {resource_id} by {requester_id}")
@@ -375,9 +388,12 @@ class DistributedLockManager(BaseNode):
             return None
         
         lock = self.locks[resource_id]
+        holders_list = list(lock.holders)
+        
         return {
             'resource_id': resource_id,
-            'holders': list(lock.holders),
+            'holders': holders_list,
+            'holder': holders_list[0] if holders_list else None,  # For backward compatibility
             'lock_type': lock.lock_type.value if lock.lock_type else None,
             'waiters': len(lock.waiters),
             'waiter_details': [

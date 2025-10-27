@@ -51,9 +51,9 @@ class RaftNode:
         self,
         node_id: str,
         cluster_nodes: List[str],
-        election_timeout_min: int = 150,
-        election_timeout_max: int = 300,
-        heartbeat_interval: int = 50
+        election_timeout_min: int = 1500,  # 1.5s min
+        election_timeout_max: int = 3000,  # 3s max
+        heartbeat_interval: int = 500      # 500ms
     ):
         self.node_id = node_id
         # Filter out this node from cluster - handle both "nodeX" and "nodeX:host:port" formats
@@ -95,8 +95,13 @@ class RaftNode:
         self.election_count = 0
     
     def _random_election_timeout(self) -> float:
-        """Generate random election timeout"""
-        return random.randint(self.election_timeout_min, self.election_timeout_max) / 1000.0
+        """Generate random election timeout with exponential backoff based on failed elections"""
+        base_timeout = random.randint(self.election_timeout_min, self.election_timeout_max)
+        if hasattr(self, 'election_count'):
+            # Add exponential backoff based on election attempts
+            backoff = min(3, self.election_count / 2)  # Cap at 3x
+            base_timeout = int(base_timeout * (1 + backoff))
+        return base_timeout / 1000.0
     
     async def start(self):
         """Start Raft node"""
@@ -140,7 +145,7 @@ class RaftNode:
         """Election timer - triggers election if no heartbeat"""
         while self._running:
             try:
-                await asyncio.sleep(0.01)  # Check every 10ms
+                await asyncio.sleep(0.1)  # Check every 100ms
                 
                 if self.state == RaftState.LEADER:
                     continue
@@ -158,8 +163,20 @@ class RaftNode:
     
     async def _start_election(self):
         """Start leader election"""
+        # Don't start election if already leader
+        if self.state == RaftState.LEADER:
+            return
+
+        # Safety check - only followers and candidates can start election
+        if self.state not in [RaftState.FOLLOWER, RaftState.CANDIDATE]:
+            return
+            
         self.election_count += 1
         logger.info(f"Node {self.node_id} starting election (term {self.current_term + 1})")
+        
+        # Reset election timer with new timeout
+        self.election_timeout = self._random_election_timeout()
+        self.last_heartbeat = time.time()
         
         # Become candidate
         await self._transition_to_candidate()
@@ -168,23 +185,43 @@ class RaftNode:
         self.voted_for = self.node_id
         self.votes_received = {self.node_id}
         
+        # Initialize total nodes including self
+        total_nodes = len(self.cluster_nodes) + 1
+        
         # Check if already have majority (for standalone nodes)
-        majority = (len(self.cluster_nodes) + 1) // 2 + 1
+        majority = (total_nodes // 2) + 1
         if len(self.votes_received) >= majority:
             logger.info(f"Node {self.node_id} won election immediately (standalone with {len(self.votes_received)} votes)")
             await self._transition_to_leader()
             return
-        
-        # Request votes from all other nodes
+
+        # Request votes from all other nodes in parallel
+        vote_tasks = []
         for node in self.cluster_nodes:
             if self.message_sender:
-                await self.message_sender(node, {
-                    'type': 'request_vote',
-                    'term': self.current_term,
-                    'candidate_id': self.node_id,
-                    'last_log_index': len(self.log) - 1 if self.log else -1,
-                    'last_log_term': self.log[-1].term if self.log else 0
-                })
+                task = asyncio.create_task(
+                    self.message_sender(node, {
+                        'type': 'request_vote',
+                        'term': self.current_term,
+                        'candidate_id': self.node_id,
+                        'last_log_index': len(self.log) - 1 if self.log else -1,
+                        'last_log_term': self.log[-1].term if self.log else 0
+                    })
+                )
+                vote_tasks.append(task)
+                
+        # Wait for responses with timeout
+        try:
+            await asyncio.wait_for(asyncio.gather(*vote_tasks, return_exceptions=True), timeout=1.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Vote request timeout for node {self.node_id} (term {self.current_term})")
+        except Exception as e:
+            logger.error(f"Error requesting votes: {e}")
+            
+        # Double check we have majority after gathering votes
+        if len(self.votes_received) >= majority:
+            logger.info(f"Node {self.node_id} confirmed majority with {len(self.votes_received)} votes")
+            await self._transition_to_leader()
     
     async def handle_request_vote(self, message: dict):
         """Handle RequestVote RPC"""
@@ -193,17 +230,30 @@ class RaftNode:
         last_log_index = message['last_log_index']
         last_log_term = message['last_log_term']
         
-        # Update term if necessary
+        logger.debug(f"Node {self.node_id} received vote request from {candidate_id} (term {term})")
+        
+        # Reject immediately if lower term
+        if term < self.current_term:
+            logger.debug(f"Node {self.node_id} rejecting vote - lower term {term} < {self.current_term}")
+            if self.message_sender:
+                await self.message_sender(candidate_id, {
+                    'type': 'vote_response',
+                    'term': self.current_term,
+                    'vote_granted': False
+                })
+            return
+        
+        # Update term if higher and become follower
         if term > self.current_term:
-            await self._update_term(term)
+            logger.info(f"Node {self.node_id} updating term {self.current_term} -> {term}")
+            await self._transition_to_follower(term)
         
         # Determine if we should grant vote
         vote_granted = False
         
-        if term < self.current_term:
-            # Reject if term is old
-            vote_granted = False
-        elif self.voted_for is None or self.voted_for == candidate_id:
+        if self.voted_for is not None and self.voted_for != candidate_id:
+            logger.debug(f"Node {self.node_id} rejecting vote - already voted for {self.voted_for}")
+        else:
             # Check if candidate's log is at least as up-to-date as ours
             our_last_log_term = self.log[-1].term if self.log else 0
             our_last_log_index = len(self.log) - 1 if self.log else -1
@@ -211,40 +261,78 @@ class RaftNode:
             log_ok = (last_log_term > our_last_log_term) or \
                      (last_log_term == our_last_log_term and last_log_index >= our_last_log_index)
             
-            if log_ok:
+            if not log_ok:
+                logger.debug(f"Node {self.node_id} rejecting vote - candidate log not up to date " + 
+                           f"(last_term:{last_log_term} vs {our_last_log_term}, " +
+                           f"last_idx:{last_log_index} vs {our_last_log_index})")
+            else:
+                # All conditions met - grant vote
                 vote_granted = True
                 self.voted_for = candidate_id
-                self.last_heartbeat = time.time()  # Reset election timer
+                logger.info(f"Node {self.node_id} granting vote to {candidate_id} (term {term})")
+                
+                # Reset election timer since we granted vote
+                self.last_heartbeat = time.time()
+                
+                # Step down if we were leader or candidate
+                if self.state != RaftState.FOLLOWER:
+                    await self._transition_to_follower(term)
         
         # Send response
         if self.message_sender:
-            await self.message_sender(candidate_id, {
+            response = {
                 'type': 'vote_response',
                 'term': self.current_term,
-                'vote_granted': vote_granted
-            })
-        
-        logger.debug(f"Vote request from {candidate_id}: {'granted' if vote_granted else 'rejected'}")
+                'vote_granted': vote_granted,
+                'sender_id': self.node_id  # Include sender for tracking
+            }
+            await self.message_sender(candidate_id, response)
+            
+        logger.debug(f"Vote request from {candidate_id}: {'granted' if vote_granted else 'rejected'} " +
+                   f"(term:{term}, current_term:{self.current_term})")
     
     async def handle_vote_response(self, message: dict):
         """Handle RequestVote response"""
-        if self.state != RaftState.CANDIDATE:
-            return
-        
         term = message['term']
         vote_granted = message.get('vote_granted', False)
         sender = message.get('sender_id')
-        
-        # Update term if necessary
+
+        logger.debug(f"Node {self.node_id} received vote response from {sender} " + 
+                   f"(granted:{vote_granted}, term:{term})")
+
+        # Validate sender
+        if not sender:
+            logger.warning("Received vote response without sender ID")
+            return
+
+        # Only process responses if still a candidate
+        if self.state != RaftState.CANDIDATE:
+            logger.debug(f"Ignoring vote from {sender} - no longer a candidate")
+            return
+            
+        # Ignore old term responses
+        if term < self.current_term:
+            logger.debug(f"Ignoring vote from {sender} - old term {term} < {self.current_term}")
+            return
+            
+        # Step down if response has higher term
         if term > self.current_term:
-            await self._update_term(term)
+            logger.info(f"Discovered higher term from {sender} ({term} > {self.current_term})")
+            await self._transition_to_follower(term)
             return
         
+        # Process vote for current term
         if vote_granted and term == self.current_term:
+            # Track vote
             self.votes_received.add(sender)
+            logger.info(f"Received vote from {sender} ({len(self.votes_received)} total votes)")
             
-            # Check if we have majority
-            majority = (len(self.cluster_nodes) + 1) // 2 + 1
+            # Check for majority
+            total_nodes = len(self.cluster_nodes) + 1  # Include self
+            majority = (total_nodes // 2) + 1
+            
+            logger.debug(f"Have {len(self.votes_received)}/{total_nodes} votes, need {majority}")
+            
             if len(self.votes_received) >= majority:
                 logger.info(f"Node {self.node_id} won election with {len(self.votes_received)} votes")
                 await self._transition_to_leader()
@@ -261,8 +349,14 @@ class RaftNode:
         if self.state_change_callback:
             await self._safe_callback(self.state_change_callback, RaftState.CANDIDATE)
     
-    async def _transition_to_follower(self):
-        """Transition to follower state"""
+    async def _transition_to_follower(self, new_term=None):
+        """
+        Transition to follower state
+        
+        Args:
+            new_term: Optional new term to update to
+        """
+        # Cancel heartbeat task if we were leader
         if self.state == RaftState.LEADER and self._heartbeat_task:
             self._heartbeat_task.cancel()
             try:
@@ -270,6 +364,13 @@ class RaftNode:
             except asyncio.CancelledError:
                 pass
         
+        # Update term if provided
+        if new_term is not None:
+            logger.info(f"Node {self.node_id} updating term {self.current_term} -> {new_term}")
+            self.current_term = new_term
+            self.voted_for = None  # Clear vote when term changes
+        
+        # Transition to follower
         self.state = RaftState.FOLLOWER
         self.election_timeout = self._random_election_timeout()
         
@@ -280,19 +381,54 @@ class RaftNode:
     
     async def _transition_to_leader(self):
         """Transition to leader state"""
+        # Safety checks
+        if self.state != RaftState.CANDIDATE:
+            logger.warning(f"Node {self.node_id} attempting to become leader while not a candidate")
+            return
+            
+        # Double check we're still in a good state
+        total_nodes = len(self.cluster_nodes) + 1
+        majority = (total_nodes // 2) + 1
+        if len(self.votes_received) < majority:
+            logger.warning(f"Node {self.node_id} cannot become leader - lost majority " +
+                         f"({len(self.votes_received)}/{total_nodes} votes)")
+            return
+            
+        # Transition to leader
         self.state = RaftState.LEADER
+        self.election_count = 0  # Reset election count
+        self.voted_for = None  # Clear vote
         
         # Initialize leader state
         last_log_index = len(self.log) - 1 if self.log else -1
         for node in self.cluster_nodes:
             self.next_index[node] = last_log_index + 1
             self.match_index[node] = 0
+            
+        logger.info(f"Node {self.node_id} became LEADER for term {self.current_term}")
         
-        logger.info(f"Node {self.node_id} became LEADER (term {self.current_term})")
-        
-        # Start sending heartbeats
+        # Cancel any existing heartbeat task
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            
+        # Send immediate heartbeat to establish authority
+        heartbeat_tasks = []
+        for node in self.cluster_nodes:
+            task = asyncio.create_task(self._send_append_entries(node))
+            heartbeat_tasks.append(task)
+            
+        # Wait for initial heartbeats with timeout
+        try:
+            await asyncio.wait_for(asyncio.gather(*heartbeat_tasks), timeout=0.5)
+        except asyncio.TimeoutError:
+            logger.warning("Initial heartbeat timeout - proceeding anyway")
+        except Exception as e:
+            logger.error(f"Error sending initial heartbeats: {e}")
+            
+        # Start periodic heartbeat task
         self._heartbeat_task = asyncio.create_task(self._send_heartbeats())
         
+        # Notify about state change
         if self.state_change_callback:
             await self._safe_callback(self.state_change_callback, RaftState.LEADER)
     

@@ -25,7 +25,7 @@ class NodeConfig:
 class ClusterConfig:
     """Configuration for cluster nodes"""
     nodes: List[str] = field(default_factory=lambda: [
-        node.strip() for node in os.getenv('CLUSTER_NODES', 'node-1:localhost:5000').split(',')
+        node.strip() for node in os.getenv('CLUSTER_NODES', 'node-1:localhost:6000').split(',')
     ])
     min_cluster_size: int = field(default_factory=lambda: int(os.getenv('MIN_CLUSTER_SIZE', '3')))
 
@@ -91,7 +91,7 @@ class PerformanceConfig:
 class APIConfig:
     """API Server configuration"""
     enable_http_api: bool = field(default_factory=lambda: os.getenv('ENABLE_HTTP_API', 'false').lower() == 'true')
-    api_host: str = field(default_factory=lambda: os.getenv('API_HOST', '0.0.0.0'))
+    api_host: str = field(default_factory=lambda: os.getenv('API_HOST', '127.0.0.1'))
     api_port: int = field(default_factory=lambda: int(os.getenv('API_PORT', '6000')))
 
 @dataclass

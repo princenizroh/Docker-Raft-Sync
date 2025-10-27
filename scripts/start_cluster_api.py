@@ -37,19 +37,19 @@ class ClusterManager:
                 'node_id': 'node-1',
                 'host': '127.0.0.1',  # Use localhost
                 'port': 5001,       # Different ports for each node
-                'api_port': 6001    # API port
+                'api_port': 6000    # API port
             },
             {
                 'node_id': 'node-2', 
                 'host': '127.0.0.1',
                 'port': 5002,
-                'api_port': 6002
+                'api_port': 6010
             },
             {
                 'node_id': 'node-3',
                 'host': '127.0.0.1',
                 'port': 5003,
-                'api_port': 6003
+                'api_port': 6020
             }
         ]
         
@@ -101,7 +101,7 @@ class ClusterManager:
                     host=config['host'],
                     port=config['raft_port'],  # Use Raft port for cluster communication
                     cluster_nodes=self.cluster_config,
-                    enable_http_api=False  # We'll set up HTTP API manually
+                    enable_http_api=True  # Enable HTTP API from the start
                 )
             elif self.node_type == 'queue':
                 node = DistributedQueue(
@@ -173,34 +173,7 @@ class ClusterManager:
         # Wait for nodes to settle
         await asyncio.sleep(1.0)
         
-        # Then set up HTTP servers
-        from src.api.http_server import HTTPAPIServer
-        for i, node in enumerate(self.nodes):
-            logger.info(f"Setting up HTTP server for {node.node_id}...")
-            
-            try:
-                # Set up HTTP API
-                http_server = HTTPAPIServer(
-                    node, 
-                    self.node_configs[i]['host'],
-                    self.node_configs[i]['api_port']
-                )
-                node.http_server = http_server
-                
-                # Try to start the HTTP server
-                success = await http_server.start()
-                if not success:
-                    logger.error(f"Failed to start HTTP server for {node.node_id}")
-                    return False
-                    
-            except Exception as e:
-                logger.error(f"Error starting HTTP server for {node.node_id}: {e}")
-                logger.exception(e)
-                return False
-            
-            # Brief pause between servers
-            if i < len(self.nodes) - 1:
-                await asyncio.sleep(0.5)
+        # HTTP servers have already been started by each node's start() method
         
         self.running = True
         logger.info("All nodes started successfully!")
@@ -259,11 +232,10 @@ class ClusterManager:
         print(f"CLUSTER STARTED: {self.node_type.upper()}")
         print("="*60)
         
-        for node in self.nodes:
-            api_port = node.port + 1000
+        for node, config in zip(self.nodes, self.node_configs):
             print(f"  {node.node_id}:")
-            print(f"    Raft Port:  {node.port}")
-            print(f"    HTTP API:   {api_port}")
+            print(f"    Raft Port:  {config['port']}")
+            print(f"    HTTP API:   {config['api_port']}")
         
         print("\nHTTP API Endpoints:")
         if self.node_type == 'lock':

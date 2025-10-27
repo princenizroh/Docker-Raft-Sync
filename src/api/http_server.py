@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from typing import Optional, Callable
+from src.nodes.lock_manager import LockType
 import aiohttp
 from aiohttp import web
 
@@ -62,8 +63,9 @@ class HTTPAPIServer:
         # Add CORS support
         # Add OPTIONS handler for all routes
         for route in list(app.router.routes()):
-            if not any(r.method == 'OPTIONS' and r.path == route.path for r in app.router.routes()):
-                app.router.add_route('OPTIONS', route.path, self.handle_options)
+            route_info = route.resource.canonical
+            if not any(r.method == 'OPTIONS' and r.resource.canonical == route_info for r in app.router.routes()):
+                app.router.add_route('OPTIONS', route_info, self.handle_options)
 
         # Add middleware for error handling
         app.middlewares.append(self._error_middleware)
@@ -71,7 +73,7 @@ class HTTPAPIServer:
         # Log available routes
         logger.info("Available HTTP API routes:")
         for route in app.router.routes():
-            logger.info(f"  {route.method:<6} {route.url_for()}")
+            logger.info(f"  {route.method:<6} {route.resource.canonical}")
         
         return app
         
@@ -296,7 +298,7 @@ class HTTPAPIServer:
             data = await request.json()
             resource = data.get('resource')
             client_id = data.get('client_id')
-            exclusive = data.get('exclusive', True)
+            lock_type_str = data.get('lock_type', 'EXCLUSIVE')
             timeout = data.get('timeout', 10.0)
             
             if not resource or not client_id:
@@ -310,11 +312,19 @@ class HTTPAPIServer:
                     'success': False,
                     'error': 'Lock manager not available'
                 }, status=400)
+                
+            try:
+                lock_type = LockType[lock_type_str.upper()]
+            except KeyError:
+                return web.json_response({
+                    'success': False,
+                    'error': f'Invalid lock_type: {lock_type_str}. Must be EXCLUSIVE or SHARED'
+                }, status=400)
             
             success = await self.node.acquire_lock(
                 resource=resource,
                 holder_id=client_id,
-                exclusive=exclusive,
+                lock_type=lock_type,
                 timeout=timeout
             )
             
@@ -322,7 +332,7 @@ class HTTPAPIServer:
                 'success': success,
                 'resource': resource,
                 'client_id': client_id,
-                'exclusive': exclusive
+                'lock_type': lock_type_str
             })
         
         except Exception as e:

@@ -14,8 +14,8 @@ async def test_lock_manager_initialization():
     lock_manager = DistributedLockManager(
         node_id="node-1",
         host="localhost",
-        port=5000,
-        cluster_nodes=["node-1:localhost:5000", "node-2:localhost:5010"]
+        port=6000,
+        cluster_nodes=["node-1:localhost:6000", "node-2:localhost:6010"]
     )
     
     assert lock_manager.node_id == "node-1"
@@ -28,8 +28,8 @@ async def test_exclusive_lock():
     lock_manager = DistributedLockManager(
         node_id="node-1",
         host="localhost",
-        port=5000,
-        cluster_nodes=["node-1:localhost:5000"]
+        port=6000,
+        cluster_nodes=["node-1:localhost:6000"]
     )
     
     # Force leader state for testing
@@ -54,8 +54,8 @@ async def test_shared_locks():
     lock_manager = DistributedLockManager(
         node_id="node-1",
         host="localhost",
-        port=5000,
-        cluster_nodes=["node-1:localhost:5000"]
+        port=6000,
+        cluster_nodes=["node-1:localhost:6000"]
     )
     
     # Force leader state
@@ -71,8 +71,8 @@ def test_lock_status():
     lock_manager = DistributedLockManager(
         node_id="node-1",
         host="localhost",
-        port=5000,
-        cluster_nodes=["node-1:localhost:5000"]
+        port=6000,
+        cluster_nodes=["node-1:localhost:6000"]
     )
     
     # Get status of non-existent lock

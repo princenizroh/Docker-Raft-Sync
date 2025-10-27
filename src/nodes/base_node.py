@@ -64,8 +64,11 @@ class BaseNode:
                 from ..api.http_server import HTTPAPIServer
                 
                 # Get API settings from config
-                api_host = config.api.api_host
-                api_port = config.api.api_port
+                api_host = '127.0.0.1'
+                # api_port is passed in through node configuration
+                api_port = int(str(self.node_id).split('-')[1]) - 1  # node-1 -> port 6000, node-2 -> port 6010, node-3 -> port 6020
+                api_port = 6000 + (api_port * 10)
+                
                 logger.info(f"Initializing HTTP API server on {api_host}:{api_port}")
                 
                 logger.debug("Creating HTTPAPIServer instance...")

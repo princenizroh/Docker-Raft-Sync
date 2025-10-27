@@ -45,13 +45,21 @@ class ClusterClient:
         try:
             url = f"http://{node}{endpoint}"
             async with self.session.post(url, json=data, timeout=5.0) as resp:
+                response_data = await resp.json()
                 if resp.status == 200:
-                    return await resp.json()
+                    return response_data
                 else:
-                    logger.warning(f"Request to {node} failed: {resp.status}")
+                    error_msg = response_data.get('error', 'Unknown error')
+                    logger.warning(f"Request to {node} failed ({resp.status}): {error_msg}")
                     return None
+        except aiohttp.ClientError as e:
+            logger.debug(f"Network error contacting {node}: {e}")
+            return None
+        except asyncio.TimeoutError:
+            logger.debug(f"Timeout contacting {node}")
+            return None
         except Exception as e:
-            logger.debug(f"Error contacting {node}: {e}")
+            logger.debug(f"Unexpected error contacting {node}: {e}")
             return None
     
     async def _find_leader(self) -> Optional[str]:
@@ -66,8 +74,14 @@ class ClusterClient:
         logger.warning("No leader found")
         return None
     
-    async def acquire_lock(self, resource: str, client_id: str, exclusive: bool = True) -> bool:
-        """Acquire distributed lock"""
+    async def acquire_lock(self, resource: str, client_id: str, lock_type: str = 'EXCLUSIVE') -> bool:
+        """Acquire distributed lock
+        
+        Args:
+            resource: Resource to lock
+            client_id: ID of client requesting lock
+            lock_type: 'EXCLUSIVE' or 'SHARED'
+        """
         if not self.leader_node:
             await self._find_leader()
         
@@ -78,13 +92,14 @@ class ClusterClient:
         data = {
             'resource': resource,
             'client_id': client_id,
-            'exclusive': exclusive
+            'lock_type': lock_type.upper(),
+            'timeout': 30.0
         }
         
         result = await self._send_request(self.leader_node, "/lock/acquire", data)
         
         if result and result.get('success'):
-            logger.info(f"✓ Lock acquired: {resource} (exclusive={exclusive})")
+            logger.info(f"✓ Lock acquired: {resource} (type={lock_type})")
             return True
         else:
             logger.warning(f"✗ Failed to acquire lock: {resource}")
@@ -97,7 +112,8 @@ class ClusterClient:
         
         data = {
             'resource': resource,
-            'client_id': client_id
+            'client_id': client_id,
+            'force': False  # Add force flag
         }
         
         result = await self._send_request(self.leader_node, "/lock/release", data)
@@ -217,13 +233,13 @@ async def demo_locks(client: ClusterClient):
     client_id = "demo_client"
     
     print(f"\n1. Acquiring exclusive lock on '{resource}'...")
-    success = await client.acquire_lock(resource, client_id, exclusive=True)
+    success = await client.acquire_lock(resource, client_id, lock_type='EXCLUSIVE')
     
     if success:
         print("   ✓ Lock acquired successfully!")
         
         print(f"\n2. Attempting second lock (should fail)...")
-        success2 = await client.acquire_lock(resource, "other_client", exclusive=True)
+        success2 = await client.acquire_lock(resource, "other_client", lock_type='EXCLUSIVE')
         
         if not success2:
             print("   ✓ Second lock correctly denied!")
@@ -242,7 +258,7 @@ async def demo_locks(client: ClusterClient):
     
     # Multiple clients with shared locks
     for i in range(3):
-        success = await client.acquire_lock(shared_resource, f"reader_{i}", exclusive=False)
+        success = await client.acquire_lock(shared_resource, f"reader_{i}", lock_type='SHARED')
         if success:
             print(f"   ✓ Reader {i} acquired shared lock")
         await asyncio.sleep(0.2)
@@ -337,9 +353,9 @@ async def main():
     
     # Define cluster nodes - connecting to Docker containers
     cluster_nodes = [
-        "localhost:5001",  # dist-node-1
-        "localhost:5011",  # dist-node-2
-        "localhost:5021"   # dist-node-3
+        "localhost:6000",  # dist-node-1
+        "localhost:6010",  # dist-node-2
+        "localhost:6020"   # dist-node-3
     ]
     
     async with ClusterClient(cluster_nodes) as client:

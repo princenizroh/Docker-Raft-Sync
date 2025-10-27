@@ -182,7 +182,7 @@ async def run_demo_on_node(node_type, node_id, port):
         await node.stop()
 
 
-def main():
+async def main():
     """Main entry point - Demo Selector"""
     print("=" * 60)
     print("Distributed Synchronization System - Demo Selector")
@@ -205,13 +205,18 @@ def main():
     
     if mode_choice == "1":
         print("\n[STARTING STANDALONE MODE]")
-        import benchmarks.demo_standalone as standalone
-        standalone.main()
+        from benchmarks.demo_standalone import run_standalone_demo
+        # Run standalone demo with defaults
+        await run_standalone_demo("lock", "demo-node", 6000)
         return
     elif mode_choice == "2":
         print("\n[STARTING CLUSTER MODE]")
-        import benchmarks.demo_cluster as cluster
-        cluster.main()
+        print("\n[INFO] Make sure cluster is running first:")
+        print("python scripts/start_cluster.py")
+        print("\nConnecting to cluster...")
+        
+        from benchmarks.demo_cluster_client import main as run_cluster_demo
+        await run_cluster_demo()
         return
     
     print("\n[FALLBACK TO STANDALONE MODE]")
@@ -241,4 +246,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

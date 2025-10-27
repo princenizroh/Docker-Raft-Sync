@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # Redis for state management (optional)
@@ -43,10 +43,7 @@ services:
       - RAFT_ELECTION_TIMEOUT_MIN=5000
       - RAFT_ELECTION_TIMEOUT_MAX=10000
     ports:
-      - target: 6000
-        published: 6000
-        protocol: tcp
-        mode: host
+      - "6000:6000"
     volumes:
       - node1_data:/app/data
     networks:
@@ -57,7 +54,16 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: curl -s -f -o /dev/null http://localhost:6000/status || exit 1
+      test:
+        [
+          "CMD",
+          "curl",
+          "-s",
+          "-f",
+          "-o",
+          "/dev/null",
+          "http://127.0.0.1:6000/status",
+        ]
       interval: 15s
       timeout: 10s
       retries: 10
@@ -90,10 +96,7 @@ services:
       - RAFT_ELECTION_TIMEOUT_MIN=5000
       - RAFT_ELECTION_TIMEOUT_MAX=10000
     ports:
-      - target: 6010
-        published: 6010
-        protocol: tcp
-        mode: host
+      - "6010:6010"
     volumes:
       - node2_data:/app/data
     networks:
@@ -106,7 +109,16 @@ services:
       node1:
         condition: service_healthy
     healthcheck:
-      test: curl -s -f -o /dev/null http://localhost:6010/status || exit 1
+      test:
+        [
+          "CMD",
+          "curl",
+          "-s",
+          "-f",
+          "-o",
+          "/dev/null",
+          "http://127.0.0.1:6010/status",
+        ]
       interval: 15s
       timeout: 10s
       retries: 10
@@ -139,10 +151,7 @@ services:
       - RAFT_ELECTION_TIMEOUT_MIN=5000
       - RAFT_ELECTION_TIMEOUT_MAX=10000
     ports:
-      - target: 6020
-        published: 6020
-        protocol: tcp
-        mode: host
+      - "6020:6020"
     volumes:
       - node3_data:/app/data
     networks:
@@ -155,7 +164,16 @@ services:
       node2:
         condition: service_healthy
     healthcheck:
-      test: curl -s -f -o /dev/null http://localhost:6020/status || exit 1
+      test:
+        [
+          "CMD",
+          "curl",
+          "-s",
+          "-f",
+          "-o",
+          "/dev/null",
+          "http://127.0.0.1:6020/status",
+        ]
       interval: 15s
       timeout: 10s
       retries: 10

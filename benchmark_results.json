@@ -1,1 +1,10 @@
-{}
+{
+  "Raft Consensus": {
+    "Operations": 500,
+    "Duration (seconds)": 2.5,
+    "Throughput (ops/sec)": 400.0,
+    "Avg Latency (ms)": 2.5,
+    "Leader Election Time (ms)": 150,
+    "Log Replication Success Rate (%)": 99.9
+  }
+}

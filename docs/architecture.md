@@ -2,7 +2,7 @@
 
 ## Gambaran Umum Sistem
 
-Bayangkan Anda punya beberapa komputer yang harus bekerja sama untuk menyelesaikan tugas. Sistem ini memastikan semua komputer tersebut tetap terkoordinasi dengan baik, walaupun ada yang mati atau jaringan terputus. Caranya adalah dengan menggunakan algoritma Raft untuk memilih pemimpin dan menjaga agar semua data tetap konsisten di semua komputer.
+Sistem ini dirancang untuk mengelola koordinasi antara beberapa komputer dalam jaringan terdistribusi. Setiap komputer (node) dalam sistem bekerja sama untuk menjaga konsistensi data dan operasi, bahkan ketika terjadi kegagalan node atau masalah jaringan. Implementasi menggunakan algoritma Raft sebagai basis konsensus, memastikan semua node tetap sinkron dan data tetap konsisten.
 
 ## Komponen Utama Sistem
 

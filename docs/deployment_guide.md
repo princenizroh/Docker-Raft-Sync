@@ -1,14 +1,21 @@
-# Deployment Guide - Distributed Synchronization System
+# Panduan Deployment - Sistem Sinkronisasi Terdistribusi
 
-## Prerequisites
+## Kebutuhan Sistem
 
-**Software Requirements:**
-- Python 3.8+ (Tested dengan Python 3.10.11)
-- Docker 20.10+ dan Docker Compose 2.0+
-- Redis 6.0+ (opsional, bisa via Docker)
-- Git
-- 4GB RAM minimum
-- 10GB disk space
+### Software Requirements
+- Python 3.10+ (Tested on 3.10.11)
+- Docker Engine 24.0+ with BuildKit support
+- Docker Compose V2 (2.20+)
+- Redis 7.2+ (optional, containerized version recommended)
+- Git 2.40+ for version control
+- WSL2 for Windows users
+
+### Hardware Requirements
+- CPU: 4 cores recommended (2 cores minimum)
+- RAM: 8GB recommended (4GB minimum)
+- Storage: 20GB SSD recommended
+- Network: Low-latency connection between nodes (< 50ms)
+- Container Runtime: Compatible with cgroup v2
 
 **Operating System:**
 - Windows 10/11 (dengan PowerShell)
@@ -154,9 +161,9 @@ docker-compose logs -f
 **Expected Output:**
 ```
 NAME       STATUS    PORTS
-node-1     Up        0.0.0.0:5000->5000/tcp
-node-2     Up        0.0.0.0:5010->5000/tcp
-node-3     Up        0.0.0.0:5020->5000/tcp
+node-1     Up        0.0.0.0:6000->6000/tcp
+node-2     Up        0.0.0.0:6010->6000/tcp
+node-3     Up        0.0.0.0:6020->6000/tcp
 redis      Up        0.0.0.0:6379->6379/tcp
 ```
 
@@ -213,10 +220,10 @@ curl http://localhost:5000/status
 # Node Configuration
 NODE_ID=node-1
 NODE_HOST=0.0.0.0
-NODE_PORT=5000
+NODE_PORT=6000
 
 # Cluster Configuration
-CLUSTER_NODES=node-1:localhost:5000,node-2:localhost:5010,node-3:localhost:5020
+CLUSTER_NODES=node-1:localhost:6000,node-2:localhost:6010,node-3:localhost:6020
 
 # Raft Configuration
 ELECTION_TIMEOUT_MIN=150  # milliseconds

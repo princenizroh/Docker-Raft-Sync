@@ -1,14 +1,22 @@
-# Quick Start Guide
+# Panduan Quick Start
 
-## ⚠️ IMPORTANT: Clean Start Required
+## ⚠️ PENTING: Persiapan Awal
 
-**ALWAYS kill old Python processes before running demos:**
+### Cleanup Proses
+**SELALU matikan proses Python yang berjalan sebelum memulai demo:**
 
 ```bash
+# Windows PowerShell
 Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# Linux/Mac
+pkill python3
 ```
 
-**Why?** Old demo processes may still be running with wrong configuration, causing perpetual elections and "Not leader" errors.
+**Mengapa?** 
+- Mencegah konflik port
+- Menghindari election conflicts
+- Memastikan clean state untuk demo
 
 ---
 
@@ -170,7 +178,11 @@ Not leader, cannot submit command
 Result: FAILED
 ```
 
-**Cause:** Old Python process still running from previous demo with wrong configuration.
+**Causes:** 
+1. Port conflict with existing processes
+2. Incorrect cluster configuration
+3. Network connectivity issues
+4. Firewall blocking communication
 
 **Solution:**
 ```bash

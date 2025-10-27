@@ -6,7 +6,9 @@ Provides REST API for client access to cluster
 import asyncio
 import json
 import logging
+import time
 from typing import Optional, Callable
+import aiohttp
 from aiohttp import web
 
 logging.basicConfig(
@@ -32,27 +34,92 @@ class HTTPAPIServer:
         self.node = node
         self.host = host
         self.port = port
-        self.app = web.Application()
-        self.app['node'] = self.node
-        self.app.router.add_routes([
-            web.get('/', self.handle_root),
-            web.get('/status', self.handle_status),
-            web.post('/status', self.handle_status)
-        ])
+        self.app = self._create_app()
         self.runner = None
         self.site = None
+        
+        # Health check task
+        self._health_task = None
 
     def _create_app(self):
         """Create and configure the web application"""
         app = web.Application()
         app['node'] = self.node
+        
+        # Base routes
         app.router.add_routes([
             web.get('/', self.handle_root),
             web.get('/status', self.handle_status),
-            web.post('/status', self.handle_status)
+            web.post('/status', self.handle_status),
+            web.get('/cluster/health', self.handle_cluster_health),
+            
+            # Lock manager endpoints
+            web.post('/lock/acquire', self.handle_lock_acquire),
+            web.post('/lock/release', self.handle_lock_release),
+            web.post('/lock/status', self.handle_lock_status)
         ])
-        logger.info("HTTP API routes configured")
+        
+        # Add CORS support
+        # Add OPTIONS handler for all routes
+        for route in list(app.router.routes()):
+            if not any(r.method == 'OPTIONS' and r.path == route.path for r in app.router.routes()):
+                app.router.add_route('OPTIONS', route.path, self.handle_options)
+
+        # Add middleware for error handling
+        app.middlewares.append(self._error_middleware)
+        
+        # Log available routes
+        logger.info("Available HTTP API routes:")
+        for route in app.router.routes():
+            logger.info(f"  {route.method:<6} {route.url_for()}")
+        
         return app
+        
+    @web.middleware
+    async def _error_middleware(self, request, handler):
+        """Global error handling middleware"""
+        try:
+            # Add CORS headers to every response
+            response = await handler(request)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+            response.headers['Access-Control-Max-Age'] = '3600'
+            return response
+            
+        except web.HTTPException as e:
+            # Log HTTP exceptions at info level
+            logger.info(f"HTTP Exception handling {request.method} {request.path}: {e}")
+            response = web.json_response({
+                'error': str(e),
+                'status': e.status,
+                'path': request.path
+            }, status=e.status)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+            
+        except asyncio.CancelledError:
+            # Handle cancelled requests gracefully
+            logger.debug(f"Request cancelled: {request.method} {request.path}")
+            response = web.json_response({
+                'error': 'Request cancelled',
+                'status': 499,
+                'path': request.path
+            }, status=499)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
+            
+        except Exception as e:
+            # Log unexpected errors with traceback
+            logger.error(f"Unexpected error handling {request.method} {request.path}: {e}")
+            logger.exception(e)
+            response = web.json_response({
+                'error': 'Internal server error',
+                'details': str(e),
+                'path': request.path
+            }, status=500)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
 
     async def handle_root(self, request):
         """Simple test endpoint with JSON response"""
@@ -61,89 +128,94 @@ class HTTPAPIServer:
             response = {
                 'status': 'ok',
                 'node_id': self.node.node_id,
-                'server': 'aiohttp'
+                'server': 'aiohttp',
+                'time': time.time()
             }
             logger.debug(f"Returning root response: {response}")
             return web.json_response(response)
+        except AttributeError as e:
+            logger.error(f"Node not properly initialized: {e}")
+            return web.json_response({'error': 'Node not initialized'}, status=503)
         except Exception as e:
             logger.error(f"Error in root handler: {e}")
-            return web.json_response({'error': str(e)}, status=500)
-    
+            logger.exception(e)
+            return web.json_response({'error': 'Internal server error'}, status=500)
+
     async def start(self):
         """Start HTTP API server"""
         try:
-            logger.info(f"Starting HTTP API server on {self.host}:{self.port}")
-            runner = web.AppRunner(self.app, access_log=None)
+            logger.info(f"Starting HTTP API server for {self.node.node_id} on {self.host}:{self.port}")
+            
+            # Set up the HTTP server
+            logger.debug("Creating AppRunner...")
+            runner = web.AppRunner(self.app)
             await runner.setup()
-            site = web.TCPSite(runner, self.host, self.port, reuse_address=True, reuse_port=True)
-            await site.start()
             self.runner = runner
+
+            logger.debug(f"Creating TCPSite on {self.host}:{self.port}...")
+            site = web.TCPSite(
+                runner, 
+                self.host, 
+                self.port,
+                reuse_address=True,  # Allow reuse of the address
+                backlog=128  # Increase connection queue size
+            )
+
+            logger.debug("Starting TCPSite...")
+            await site.start()
             self.site = site
-            logger.info(f"HTTP API server started successfully on {self.host}:{self.port}")
-        except Exception as e:
-            logger.error(f"Failed to start HTTP API server: {str(e)}")
+            
+            # Wait briefly to verify server started
+            await asyncio.sleep(0.1)
+            
+            # Attempt a test request to verify server is listening
+            async with aiohttp.ClientSession() as session:
+                try:
+                    await session.get(f"http://{self.host}:{self.port}/")
+                except Exception as e:
+                    logger.error(f"Failed to verify server is listening: {e}")
+                    await site.stop()
+                    await runner.cleanup()
+                    return False
+            
+            logger.info(f"HTTP API server for {self.node.node_id} started successfully on {self.host}:{self.port}")
+            return True
+            
+        except OSError as e:
+            logger.error(f"OS Error starting HTTP API server: {e}")
             logger.exception(e)
-            raise
-    
-    async def _health_check(self):
-        """Run periodic health checks on the HTTP server"""
-        while True:
-            try:
-                # Sleep first to give the server time to start
-                await asyncio.sleep(5)  # Increased sleep time
-                
-                # Simple health check - just verify components exist
-                if not self.site or not self.runner:
-                    logger.error("HTTP server components not initialized")
-                    continue
-                    
-            except asyncio.CancelledError:
-                logger.info("HTTP health check task cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in HTTP health check: {e}")
-                await asyncio.sleep(5)  # Wait longer on error
-    
+            return False
+        except Exception as e:
+            logger.error(f"Error starting HTTP API server: {e}")
+            logger.exception(e)
+            return False
+
+    async def handle_options(self, request):
+        """Handle OPTIONS requests for CORS preflight"""
+        response = web.Response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        response.headers['Access-Control-Max-Age'] = '3600'
+        return response
+
     async def stop(self):
         """Stop HTTP API server"""
-        logger.info("Stopping HTTP API server...")
         try:
-            # Cancel health check task if running
-            if hasattr(self, '_health_task'):
-                logger.debug("Cancelling health check task...")
-                self._health_task.cancel()
-                try:
-                    await self._health_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.warning(f"Error waiting for health task to cancel: {e}")
-                self._health_task = None
-            
-            # Stop site first
+            # First stop accepting new connections
             if self.site:
-                logger.debug("Stopping TCP site...")
-                try:
-                    await asyncio.wait_for(self.site.stop(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    logger.warning("TCP site stop timed out")
-                except Exception as e:
-                    logger.error(f"Error stopping TCP site: {e}")
+                logger.info("Stopping HTTP API server site...")
+                await self.site.stop()
                 self.site = None
+
+            # Then wait briefly for existing requests to complete
+            await asyncio.sleep(0.5)
             
-            # Then clean up runner
+            # Finally cleanup runner and tasks
             if self.runner:
-                logger.debug("Cleaning up runner...")
-                try:
-                    await asyncio.wait_for(self.runner.cleanup(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    logger.warning("Runner cleanup timed out")
-                except Exception as e:
-                    logger.error(f"Error cleaning up runner: {e}")
+                logger.info("Cleaning up HTTP API server...")
+                await self.runner.cleanup()
                 self.runner = None
-            
-            # Brief pause to ensure cleanup
-            await asyncio.sleep(0.1)
             
             logger.info("HTTP API server stopped successfully")
         except Exception as e:
@@ -157,24 +229,64 @@ class HTTPAPIServer:
         """Handle status request"""
         logger.debug("Handling status request")
         try:
+            # Basic node checks
+            if not self.node or not self.node.raft or not self.node.failure_detector:
+                logger.error("Node, Raft, or failure detector not initialized")
+                return web.json_response({
+                    'error': 'Node components not fully initialized',
+                    'status': 'error'
+                }, status=503)
+
+            # Collect state information
             status = {
+                'status': 'ok',
                 'node_id': self.node.node_id,
                 'is_leader': self.node.raft.is_leader(),
                 'state': self.node.raft.state.value,
                 'term': self.node.raft.current_term,
-                'running': True
+                'running': True,
+                'timestamp': time.time(),
+                'last_contact': {
+                    node_id: int(time.time() - node_status.last_heartbeat)
+                    for node_id, node_status in self.node.failure_detector.node_states.items()
+                    if node_id != self.node.node_id
+                }
             }
-            return web.Response(
-                text=json.dumps(status),
-                content_type='application/json'
-            )
+            return web.json_response(status)
+            
+        except AttributeError as e:
+            logger.error(f"Node not properly initialized: {e}")
+            return web.json_response({
+                'error': 'Node not fully initialized',
+                'details': str(e),
+                'status': 'error'
+            }, status=503)
+            
         except Exception as e:
-            logger.error(f"Error in status handler: {e}")
-            return web.Response(
-                text=json.dumps({'error': str(e)}),
-                content_type='application/json',
-                status=500
-            )
+            logger.error(f"Error handling status request: {e}")
+            logger.exception(e)
+            return web.json_response({
+                'error': 'Internal server error',
+                'status': 'error'
+            }, status=500)
+        
+    async def handle_cluster_health(self, request):
+        """Handle cluster health request"""
+        logger.debug("Handling cluster health request")
+        health = self.node.failure_detector.get_cluster_health()
+        return web.json_response({
+            'node_id': self.node.node_id,
+            'state': self.node.raft.state.value,
+            'is_leader': self.node.raft.is_leader(),
+            'cluster_health': health,
+            'nodes': {
+                node_id: {
+                    'state': status.state.value,
+                    'last_heartbeat': int(time.time() - status.last_heartbeat)
+                }
+                for node_id, status in self.node.failure_detector.node_states.items()
+            }
+        })
     
     # Lock Endpoints
     
@@ -193,7 +305,6 @@ class HTTPAPIServer:
                     'error': 'Missing resource or client_id'
                 }, status=400)
             
-            # Check if node has acquire_lock method
             if not hasattr(self.node, 'acquire_lock'):
                 return web.json_response({
                     'success': False,
@@ -260,189 +371,4 @@ class HTTPAPIServer:
         
         except Exception as e:
             logger.error(f"Error in lock status: {e}")
-            return web.json_response({'error': str(e)}, status=500)
-    
-    # Queue Endpoints
-    
-    async def handle_queue_enqueue(self, request):
-        """Handle queue enqueue request"""
-        try:
-            data = await request.json()
-            queue_name = data.get('queue_name')
-            message_data = data.get('data')
-            
-            if not queue_name or message_data is None:
-                return web.json_response({
-                    'success': False,
-                    'error': 'Missing queue_name or data'
-                }, status=400)
-            
-            if not hasattr(self.node, 'enqueue'):
-                return web.json_response({
-                    'success': False,
-                    'error': 'Queue not available'
-                }, status=400)
-            
-            success = await self.node.enqueue(queue_name, message_data)
-            
-            return web.json_response({
-                'success': success,
-                'queue_name': queue_name
-            })
-        
-        except Exception as e:
-            logger.error(f"Error in queue enqueue: {e}")
-            return web.json_response({'success': False, 'error': str(e)}, status=500)
-    
-    async def handle_queue_dequeue(self, request):
-        """Handle queue dequeue request"""
-        try:
-            data = await request.json()
-            queue_name = data.get('queue_name')
-            consumer_id = data.get('consumer_id')
-            
-            if not queue_name or not consumer_id:
-                return web.json_response({
-                    'success': False,
-                    'error': 'Missing queue_name or consumer_id'
-                }, status=400)
-            
-            if not hasattr(self.node, 'dequeue'):
-                return web.json_response({
-                    'success': False,
-                    'error': 'Queue not available'
-                }, status=400)
-            
-            message = await self.node.dequeue(queue_name, consumer_id)
-            
-            if message:
-                return web.json_response({
-                    'success': True,
-                    'message': message.to_dict() if hasattr(message, 'to_dict') else str(message)
-                })
-            else:
-                return web.json_response({
-                    'success': False,
-                    'message': None
-                })
-        
-        except Exception as e:
-            logger.error(f"Error in queue dequeue: {e}")
-            return web.json_response({'success': False, 'error': str(e)}, status=500)
-    
-    async def handle_queue_status(self, request):
-        """Handle queue status request"""
-        try:
-            if not hasattr(self.node, 'get_queue_stats'):
-                return web.json_response({'error': 'Queue not available'}, status=400)
-            
-            status = self.node.get_queue_stats()
-            return web.json_response(status)
-        
-        except Exception as e:
-            logger.error(f"Error in queue status: {e}")
-            return web.json_response({'error': str(e)}, status=500)
-    
-    # Cache Endpoints
-    
-    async def handle_cache_get(self, request):
-        """Handle cache get request"""
-        try:
-            data = await request.json()
-            key = data.get('key')
-            
-            if not key:
-                return web.json_response({
-                    'success': False,
-                    'error': 'Missing key'
-                }, status=400)
-            
-            if not hasattr(self.node, 'get'):
-                return web.json_response({
-                    'success': False,
-                    'error': 'Cache not available'
-                }, status=400)
-            
-            value = await self.node.get(key)
-            
-            return web.json_response({
-                'success': value is not None,
-                'key': key,
-                'value': value
-            })
-        
-        except Exception as e:
-            logger.error(f"Error in cache get: {e}")
-            return web.json_response({'success': False, 'error': str(e)}, status=500)
-    
-    async def handle_cache_put(self, request):
-        """Handle cache put request"""
-        try:
-            data = await request.json()
-            key = data.get('key')
-            value = data.get('value')
-            
-            if not key or value is None:
-                return web.json_response({
-                    'success': False,
-                    'error': 'Missing key or value'
-                }, status=400)
-            
-            if not hasattr(self.node, 'put'):
-                return web.json_response({
-                    'success': False,
-                    'error': 'Cache not available'
-                }, status=400)
-            
-            success = await self.node.put(key, value)
-            
-            return web.json_response({
-                'success': success,
-                'key': key
-            })
-        
-        except Exception as e:
-            logger.error(f"Error in cache put: {e}")
-            return web.json_response({'success': False, 'error': str(e)}, status=500)
-    
-    async def handle_cache_delete(self, request):
-        """Handle cache delete request"""
-        try:
-            data = await request.json()
-            key = data.get('key')
-            
-            if not key:
-                return web.json_response({
-                    'success': False,
-                    'error': 'Missing key'
-                }, status=400)
-            
-            if not hasattr(self.node, 'delete'):
-                return web.json_response({
-                    'success': False,
-                    'error': 'Cache not available'
-                }, status=400)
-            
-            success = await self.node.delete(key)
-            
-            return web.json_response({
-                'success': success,
-                'key': key
-            })
-        
-        except Exception as e:
-            logger.error(f"Error in cache delete: {e}")
-            return web.json_response({'success': False, 'error': str(e)}, status=500)
-    
-    async def handle_cache_status(self, request):
-        """Handle cache status request"""
-        try:
-            if not hasattr(self.node, 'get_cache_stats'):
-                return web.json_response({'error': 'Cache not available'}, status=400)
-            
-            status = self.node.get_cache_stats()
-            return web.json_response(status)
-        
-        except Exception as e:
-            logger.error(f"Error in cache status: {e}")
             return web.json_response({'error': str(e)}, status=500)

@@ -31,20 +31,39 @@ class ClusterManager:
         self.nodes: List = []
         self.running = False
         
-        # Define cluster configuration - connecting to Docker containers
+        # Define cluster configuration
+        self.node_configs = [
+            {
+                'node_id': 'node-1',
+                'host': '127.0.0.1',  # Use localhost
+                'port': 5001,       # Different ports for each node
+                'api_port': 6001    # API port
+            },
+            {
+                'node_id': 'node-2', 
+                'host': '127.0.0.1',
+                'port': 5002,
+                'api_port': 6002
+            },
+            {
+                'node_id': 'node-3',
+                'host': '127.0.0.1',
+                'port': 5003,
+                'api_port': 6003
+            }
+        ]
+        
+        # Internal cluster configuration
         if node_type == 'lock':
-            # Connect to Raft ports
+            # For Raft cluster config
             self.cluster_config = [
-                "node1:localhost:5000",  # Node 1 Raft port
-                "node2:localhost:5010",  # Node 2 Raft port
-                "node3:localhost:5020"   # Node 3 Raft port
+                f"{config['node_id']}:{config['host']}:{config['port']}"
+                for config in self.node_configs
             ]
-            # Connect to HTTP API ports
-            self.node_configs = [
-                {'node_id': 'node1', 'host': 'localhost', 'port': 5001, 'container': True},  # Node 1 HTTP API
-                {'node_id': 'node2', 'host': 'localhost', 'port': 5011, 'container': True},  # Node 2 HTTP API
-                {'node_id': 'node3', 'host': 'localhost', 'port': 5021, 'container': True}   # Node 3 HTTP API
-            ]
+                # Configure ports
+            for config in self.node_configs:
+                config['raft_port'] = config['port']  # Store original Raft port
+                config['http_port'] = config['api_port']  # Store HTTP API port separately
         elif node_type == 'queue':
             self.cluster_config = [
                 "qnode1:localhost:6001",
@@ -75,13 +94,14 @@ class ClusterManager:
         # Connect to existing nodes in Docker
         for config in self.node_configs:
             if self.node_type == 'lock':
-                # Instead of creating new servers, create client connections
-                from src.api.http_client import HTTPAPIClient
-                node = HTTPAPIClient(
+                # Use direct node connection instead of client
+                from src.nodes.lock_manager import DistributedLockManager
+                node = DistributedLockManager(
                     node_id=config['node_id'],
                     host=config['host'],
-                    port=config['port'],
-                    cluster_nodes=self.cluster_config
+                    port=config['raft_port'],  # Use Raft port for cluster communication
+                    cluster_nodes=self.cluster_config,
+                    enable_http_api=False  # We'll set up HTTP API manually
                 )
             elif self.node_type == 'queue':
                 node = DistributedQueue(
@@ -111,12 +131,74 @@ class ClusterManager:
             
             self.nodes.append(node)
         
-        # Start all nodes
+        # First try to verify ports are available
+        logger.info("Verifying ports are available...")
+        import socket
+
+        def check_port(host, port):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind((host, port))
+                sock.close()
+                return True
+            except Exception as e:
+                logger.error(f"Port {port} is not available: {e}")
+                return False
+
+        # Check Raft ports
+        for config in self.node_configs:
+            if not check_port(config['host'], config['port']):
+                logger.error(f"Raft port {config['port']} is in use")
+                return False
+
+        # Check HTTP ports
+        for config in self.node_configs:
+            if not check_port(config['host'], config['api_port']):
+                logger.error(f"HTTP port {config['api_port']} is in use")
+                return False
+
+        # Start nodes one by one
         for i, node in enumerate(self.nodes):
             logger.info(f"Starting {node.node_id}...")
-            await node.start()
+            try:
+                await node.start()
+            except Exception as e:
+                logger.error(f"Error starting {node.node_id}: {e}")
+                return False
+
+            # Brief pause between nodes
+            if i < len(self.nodes) - 1:
+                await asyncio.sleep(0.5)
+
+        # Wait for nodes to settle
+        await asyncio.sleep(1.0)
+        
+        # Then set up HTTP servers
+        from src.api.http_server import HTTPAPIServer
+        for i, node in enumerate(self.nodes):
+            logger.info(f"Setting up HTTP server for {node.node_id}...")
             
-            # Stagger startup to avoid election conflicts
+            try:
+                # Set up HTTP API
+                http_server = HTTPAPIServer(
+                    node, 
+                    self.node_configs[i]['host'],
+                    self.node_configs[i]['api_port']
+                )
+                node.http_server = http_server
+                
+                # Try to start the HTTP server
+                success = await http_server.start()
+                if not success:
+                    logger.error(f"Failed to start HTTP server for {node.node_id}")
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"Error starting HTTP server for {node.node_id}: {e}")
+                logger.exception(e)
+                return False
+            
+            # Brief pause between servers
             if i < len(self.nodes) - 1:
                 await asyncio.sleep(0.5)
         
@@ -130,6 +212,23 @@ class ClusterManager:
         await asyncio.sleep(2.0)
         await self._print_leader_info()
     
+    async def run_forever(self):
+        """Run cluster indefinitely until stopped"""
+        try:
+            # Just keep running until cancelled
+            while self.running:
+                await asyncio.sleep(1)
+                # Verify HTTP servers are still running
+                for server in [node.http_server for node in self.nodes]:
+                    if not server or not server.site or not server.runner:
+                        logger.error("HTTP server components lost")
+                        self.running = False
+                        return
+                
+        except asyncio.CancelledError:
+            self.running = False
+            raise
+            
     async def stop_nodes(self):
         """Stop all nodes"""
         logger.info("Stopping all nodes...")
@@ -137,6 +236,17 @@ class ClusterManager:
         
         for node in self.nodes:
             try:
+                # Stop HTTP server first if present
+                if hasattr(node, 'http_server') and node.http_server:
+                    try:
+                        if node.http_server.site:
+                            await node.http_server.site.stop()
+                        if node.http_server.runner:
+                            await node.http_server.runner.cleanup()
+                    except Exception as e:
+                        logger.error(f"Error stopping HTTP server for {node.node_id}: {e}")
+
+                # Then stop the node itself
                 await node.stop()
             except Exception as e:
                 logger.error(f"Error stopping {node.node_id}: {e}")
@@ -185,7 +295,7 @@ class ClusterManager:
             
         print("⚠ No leader detected in Docker cluster")
     
-    async def run_forever(self):
+    async def _monitor_cluster(self):
         """Monitor Docker cluster forever"""
         try:
             while self.running:
@@ -199,14 +309,21 @@ class ClusterManager:
             
     async def _check_docker_cluster_health(self):
         """Check Docker cluster health"""
-        healthy = 0
-        for node in self.nodes:
-            status = await node.get_status()
-            if status.get("status") != "error":
-                healthy += 1
+        try:
+            healthy = 0
+            for node in self.nodes:
+                try:
+                    status = await node.get_status()
+                    if status and status.get("status") != "error":
+                        healthy += 1
+                except Exception as e:
+                    logger.error(f"Error checking {node.node_id} status: {e}")
+                    
+            if healthy < len(self.nodes):
+                logger.warning(f"Docker cluster health: {healthy}/{len(self.nodes)} nodes responding")
                 
-        if healthy < len(self.nodes):
-            logger.warning(f"Docker cluster health: {healthy}/{len(self.nodes)} nodes responding")
+        except Exception as e:
+            logger.error(f"Error checking cluster health: {e}")
     
     def _check_cluster_health(self):
         """Check cluster health"""
@@ -227,11 +344,36 @@ async def main():
             print(f"Error: Invalid node type '{node_type}'")
             print("Usage: python scripts/start_cluster_api.py [lock|queue|cache]")
             sys.exit(1)
-    
+
     print("\n" + "="*60)
     print(f"STARTING 3-NODE {node_type.upper()} CLUSTER WITH HTTP API")
     print("="*60 + "\n")
     
+    # Check Docker containers first
+    try:
+        result = await asyncio.create_subprocess_shell(
+            'docker ps --filter "name=dist-node"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await result.communicate()
+        
+        if result.returncode != 0:
+            print("❌ Error checking Docker containers!")
+            print(f"Error: {stderr.decode()}")
+            sys.exit(1)
+            
+        output = stdout.decode()
+        if 'dist-node' not in output:
+            print("❌ Docker containers not running!")
+            print("Please start containers first:")
+            print("  cd docker")
+            print("  docker-compose up --build -d")
+            sys.exit(1)
+            
+        print("✓ Docker containers detected")
+    except Exception as e:
+        print(f"❌ Error checking Docker containers: {e}")
     # Create cluster manager
     cluster = ClusterManager(node_type)
     
@@ -263,7 +405,11 @@ async def main():
         print("="*60 + "\n")
         
         # Run forever
-        await cluster.run_forever()
+        while True:
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                break
     
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
@@ -283,7 +429,26 @@ async def main():
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nShutdown complete")
-        sys.exit(0)
+        # Use a custom event loop policy for Windows
+        if sys.platform == 'win32':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
+        # Run with proper cleanup
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(main())
+        except KeyboardInterrupt:
+            # Ensure we have time for cleanup
+            print("\nShutting down...")
+            tasks = asyncio.gather(*asyncio.all_tasks(loop), return_exceptions=True)
+            tasks.cancel()
+            loop.run_until_complete(tasks)
+            loop.stop()
+        finally:
+            loop.close()
+            print("\nShutdown complete")
+            sys.exit(0)
+    except Exception as e:
+        print(f"\nError: {e}")
+        sys.exit(1)

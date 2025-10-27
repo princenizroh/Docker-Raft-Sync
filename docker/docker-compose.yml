@@ -35,6 +35,13 @@ services:
       - ENABLE_HTTP_API=true
       - API_HOST=0.0.0.0
       - API_PORT=6000
+      - FAILURE_DETECTOR_PHI_THRESHOLD=30.0
+      - FAILURE_DETECTOR_WINDOW_SIZE=100
+      - FAILURE_DETECTOR_MIN_SAMPLES=20
+      - FAILURE_DETECTOR_SUSPECT_TIMEOUT=30000
+      - RAFT_HEARTBEAT_INTERVAL=1000
+      - RAFT_ELECTION_TIMEOUT_MIN=5000
+      - RAFT_ELECTION_TIMEOUT_MAX=10000
     ports:
       - target: 6000
         published: 6000
@@ -51,10 +58,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: curl -s -f -o /dev/null http://localhost:6000/status || exit 1
-      interval: 10s
+      interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 10
+      start_period: 60s
     restart: unless-stopped
 
   # Node 2
@@ -75,6 +82,13 @@ services:
       - ENABLE_HTTP_API=true
       - API_HOST=0.0.0.0
       - API_PORT=6010
+      - FAILURE_DETECTOR_PHI_THRESHOLD=30.0
+      - FAILURE_DETECTOR_WINDOW_SIZE=100
+      - FAILURE_DETECTOR_MIN_SAMPLES=20
+      - FAILURE_DETECTOR_SUSPECT_TIMEOUT=30000
+      - RAFT_HEARTBEAT_INTERVAL=1000
+      - RAFT_ELECTION_TIMEOUT_MIN=5000
+      - RAFT_ELECTION_TIMEOUT_MAX=10000
     ports:
       - target: 6010
         published: 6010
@@ -93,10 +107,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: curl -s -f -o /dev/null http://localhost:6010/status || exit 1
-      interval: 10s
+      interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 10
+      start_period: 60s
     restart: unless-stopped
 
   # Node 3
@@ -117,6 +131,13 @@ services:
       - ENABLE_HTTP_API=true
       - API_HOST=0.0.0.0
       - API_PORT=6020
+      - FAILURE_DETECTOR_PHI_THRESHOLD=30.0
+      - FAILURE_DETECTOR_WINDOW_SIZE=100
+      - FAILURE_DETECTOR_MIN_SAMPLES=20
+      - FAILURE_DETECTOR_SUSPECT_TIMEOUT=30000
+      - RAFT_HEARTBEAT_INTERVAL=1000
+      - RAFT_ELECTION_TIMEOUT_MIN=5000
+      - RAFT_ELECTION_TIMEOUT_MAX=10000
     ports:
       - target: 6020
         published: 6020
@@ -135,10 +156,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: curl -s -f -o /dev/null http://localhost:6020/status || exit 1
-      interval: 10s
+      interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 10
+      start_period: 60s
     restart: unless-stopped
 
 networks:

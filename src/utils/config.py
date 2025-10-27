@@ -42,8 +42,8 @@ class RedisConfig:
 @dataclass
 class RaftConfig:
     """Raft consensus algorithm configuration"""
-    election_timeout_min: int = field(default_factory=lambda: int(os.getenv('RAFT_ELECTION_TIMEOUT_MIN', '150')))
-    election_timeout_max: int = field(default_factory=lambda: int(os.getenv('RAFT_ELECTION_TIMEOUT_MAX', '300')))
+    election_timeout_min: int = field(default_factory=lambda: int(os.getenv('RAFT_ELECTION_TIMEOUT_MIN', '2000')))
+    election_timeout_max: int = field(default_factory=lambda: int(os.getenv('RAFT_ELECTION_TIMEOUT_MAX', '4000')))
     heartbeat_interval: int = field(default_factory=lambda: int(os.getenv('RAFT_HEARTBEAT_INTERVAL', '50')))
 
 

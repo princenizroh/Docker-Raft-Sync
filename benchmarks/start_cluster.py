@@ -68,12 +68,12 @@ def main():
     check_dependencies()
     
     # Define cluster
-    cluster_nodes = "node-1:localhost:5000,node-2:localhost:5010,node-3:localhost:5020"
+    cluster_nodes = "node-1:localhost:6000,node-2:localhost:6010,node-3:localhost:6020"
     
     nodes = [
-        ("node-1", 5000),
-        ("node-2", 5010),
-        ("node-3", 5020)
+        ("node-1", 6000),
+        ("node-2", 6010),
+        ("node-3", 6020)
     ]
     
     processes = []

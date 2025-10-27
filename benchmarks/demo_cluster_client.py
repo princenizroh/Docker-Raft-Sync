@@ -45,13 +45,27 @@ class ClusterClient:
         try:
             url = f"http://{node}{endpoint}"
             async with self.session.post(url, json=data, timeout=5.0) as resp:
-                response_data = await resp.json()
+                try:
+                    response_data = await resp.json()
+                except Exception:
+                    response_data = {'error': 'Failed to parse response'}
+
                 if resp.status == 200:
                     return response_data
+                elif resp.status == 404:
+                    logger.debug(f"Endpoint {endpoint} not found on {node}")
+                    return None
+                elif resp.status == 503:
+                    logger.debug(f"Node {node} not ready")
+                    return None
                 else:
                     error_msg = response_data.get('error', 'Unknown error')
                     logger.warning(f"Request to {node} failed ({resp.status}): {error_msg}")
                     return None
+                    
+        except aiohttp.ClientConnectorError:
+            logger.debug(f"Connection failed to {node}")
+            return None
         except aiohttp.ClientError as e:
             logger.debug(f"Network error contacting {node}: {e}")
             return None
@@ -59,19 +73,41 @@ class ClusterClient:
             logger.debug(f"Timeout contacting {node}")
             return None
         except Exception as e:
-            logger.debug(f"Unexpected error contacting {node}: {e}")
+            logger.debug(f"Unexpected error contacting {node}: {e}", exc_info=True)
             return None
     
     async def _find_leader(self) -> Optional[str]:
         """Find current cluster leader"""
+        # Try current leader first if we have one
+        if self.leader_node:
+            try:
+                result = await self._send_request(self.leader_node, "/status", {})
+                if result and result.get('is_leader'):
+                    return self.leader_node
+            except Exception:
+                pass
+
+        # If current leader is not responding or lost leadership, try all nodes
         for node in self.cluster_nodes:
-            result = await self._send_request(node, "/status", {})
-            if result and result.get('is_leader'):
-                logger.info(f"Found leader: {node}")
-                self.leader_node = node
-                return node
+            if node == self.leader_node:
+                continue  # Already tried this one
+            try:
+                result = await self._send_request(node, "/status", {})
+                if result and result.get('is_leader'):
+                    logger.info(f"Found leader: {node}")
+                    self.leader_node = node
+                    return node
+            except Exception as e:
+                logger.debug(f"Error checking {node}: {e}")
+                continue
+
+        # No leader found, clear current leader
+        if self.leader_node:
+            logger.warning("Current leader not responding or lost leadership")
+            self.leader_node = None
+        else:
+            logger.warning("No leader found")
         
-        logger.warning("No leader found")
         return None
     
     async def acquire_lock(self, resource: str, client_id: str, lock_type: str = 'EXCLUSIVE') -> bool:
@@ -89,20 +125,23 @@ class ClusterClient:
             logger.error("Cannot acquire lock: no leader available")
             return False
         
-        data = {
-            'resource': resource,
-            'client_id': client_id,
-            'lock_type': lock_type.upper(),
-            'timeout': 30.0
-        }
-        
-        result = await self._send_request(self.leader_node, "/lock/acquire", data)
-        
-        if result and result.get('success'):
-            logger.info(f"✓ Lock acquired: {resource} (type={lock_type})")
-            return True
-        else:
-            logger.warning(f"✗ Failed to acquire lock: {resource}")
+        try:
+            data = {
+                'resource': resource,
+                'client_id': client_id,
+                'lock_type': lock_type.upper(),
+                'timeout': 30.0
+            }
+            
+            result = await self._send_request(self.leader_node, "/lock/acquire", data)
+            if result and result.get('success'):
+                logger.info(f"✓ Lock acquired: {resource} (type={lock_type})")
+                return True
+            else:
+                logger.warning(f"✗ Failed to acquire lock: {resource}")
+                return False
+        except Exception as e:
+            logger.error(f"Error acquiring lock: {e}")
             return False
     
     async def release_lock(self, resource: str, client_id: str) -> bool:
@@ -116,13 +155,13 @@ class ClusterClient:
             'force': False  # Add force flag
         }
         
-        result = await self._send_request(self.leader_node, "/lock/release", data)
-        
-        if result and result.get('success'):
-            logger.info(f"✓ Lock released: {resource}")
-            return True
-        else:
-            logger.warning(f"✗ Failed to release lock: {resource}")
+        try:
+            result = await self._send_request(self.leader_node, "/lock/release", data)
+            if result:
+                return result.get('success', False)
+            return False
+        except Exception as e:
+            logger.error(f"Error releasing lock: {e}")
             return False
     
     async def enqueue_message(self, queue_name: str, data: Any) -> bool:
@@ -351,11 +390,11 @@ async def main():
     print("Make sure nodes are started with: python scripts/start_cluster.py")
     print("="*60)
     
-    # Define cluster nodes - connecting to Docker containers
+    # Define cluster nodes - HTTP API endpoints
     cluster_nodes = [
-        "localhost:6000",  # dist-node-1
-        "localhost:6010",  # dist-node-2
-        "localhost:6020"   # dist-node-3
+        "127.0.0.1:6000",  # node-1
+        "127.0.0.1:6010",  # node-2
+        "127.0.0.1:6020"   # node-3
     ]
     
     async with ClusterClient(cluster_nodes) as client:
@@ -387,7 +426,7 @@ async def main():
             logger.error(f"Demo error: {e}")
             print("\n✗ Demo failed - cluster may not be running properly")
             print("   Make sure to start cluster first:")
-            print("   python scripts/start_cluster.py")
+            print("   python scripts/start_cluster_api.py")
     
     print("\n" + "="*60)
     print("DEMO COMPLETED")

@@ -19,8 +19,8 @@ async def test_consistent_hashing():
     print("\n" + "="*60)
     print("TEST 1: CONSISTENT HASHING")
     print("="*60)
-    
-    nodes = ["node1:localhost:5001", "node2:localhost:5002", "node3:localhost:5003"]
+
+    nodes = ["node1:localhost:6000", "node2:localhost:6010", "node3:localhost:6020"]
     ch = ConsistentHash(nodes, virtual_nodes=150)
     
     print(f"\n✓ Created hash ring with {len(nodes)} physical nodes")

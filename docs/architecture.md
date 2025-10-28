@@ -109,7 +109,3 @@ Berdasarkan testing yang sudah dilakukan pada satu mesin, sistem ini mampu menan
 Proses pemilihan leader kalau terjadi kegagalan rata-rata memakan waktu sekitar 2 detik. Ini sudah termasuk waktu untuk mendeteksi kegagalan leader lama dan memilih leader baru. Untuk cache, tingkat cache hit rate mencapai 73%, yang artinya 73% request data bisa dilayani langsung dari cache tanpa perlu akses ke storage.
 
 Untuk antrian pesan, sistem mampu memproses sekitar 1,200 pesan per detik. Angka ini bisa bervariasi tergantung ukuran pesan dan konfigurasi hardware yang digunakan.
-
-## Panduan Deployment
-
-Untuk panduan lengkap cara deploy sistem ini ke production, silakan lihat file deployment_guide.md yang ada di folder docs. Di sana dijelaskan step-by-step mulai dari persiapan server, instalasi dependencies, konfigurasi cluster, sampai monitoring dan troubleshooting.

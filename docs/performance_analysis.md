@@ -210,4 +210,3 @@ Keterangan: beberapa histogram/boxplot menunjukkan banyak nilai 0.0. Hal ini men
 
 - Hasil awal (standalone kecil) menunjukkan sistem cepat untuk operasi in-memory pada skala kecil, dengan throughput puluhan–ratusan ops/sec pada percobaan kecil ini.
 - Untuk membuat klaim kuat tentang throughput/latency/scalability, diperlukan eksperimen yang lebih besar, pengaturan proses yang memisahkan node & clients, dan pengukuran observability (Prometheus).
-- Saya siap membantu menyiapkan dan menjalankan eksperimen cluster lengkap, atau memperbaiki skrip benchmark agar memberi hasil yang andal. Mana yang ingin Anda jalankan selanjutnya?

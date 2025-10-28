@@ -114,174 +114,207 @@ cp .env.example .env
 # Edit .env sesuai kebutuhan (PORT, CLUSTER_NODES, REDIS_HOST, dsb.)
 ```
 
-### Cara Menjalankan Sistem
 
-#### Metode 1: Menjalankan secara lokal (3 terminal) — direkomendasikan untuk debugging
-Jalankan tiga proses Node di terminal berbeda. Penting: gunakan `--host 0.0.0.0` supaya server bind ke semua interface ketika diperlukan.
+Repository ini adalah implementasi eksperimen sistem terdistribusi berbasis Raft yang menyediakan tiga primitive utama:
+- Distributed Lock Manager
+- Distributed Queue
+- Distributed Cache (coherence)
 
-Terminal 1 - Node 1:
-```bash
-python -m src.nodes.base_node --node-id node-1 --host 0.0.0.0 --port 6000 --cluster-nodes node-1:localhost:6000,node-2:localhost:6010,node-3:localhost:6020
-```
-
-Terminal 2 - Node 2:
-```bash
-python -m src.nodes.base_node --node-id node-2 --host 0.0.0.0 --port 6010 --cluster-nodes node-1:localhost:6000,node-2:localhost:6010,node-3:localhost:6020
-```
-
-Terminal 3 - Node 3:
-```bash
-python -m src.nodes.base_node --node-id node-3 --host 0.0.0.0 --port 6020 --cluster-nodes node-1:localhost:6000,node-2:localhost:6010,node-3:localhost:6020
-```
-
-Setelah semua node berjalan, Anda dapat memanggil:
-```bash
-curl http://localhost:6000/status
-curl http://localhost:6010/status
-curl http://localhost:6020/status
-```
-
-#### Metode 2: Menggunakan Docker Compose (untuk cluster yang tercontainerisasi)
-Gunakan file `docker/docker-compose.yml`.
-
-Build dan start:
-```bash
-# dari root project
-cd docker
-
-# Build images
-docker compose build
-
-# Start cluster (3 nodes)
-docker compose up -d --build
-
-# Atau jika ingin scale service yang dinamai `node`:
-docker compose up -d --build --scale node=3
-```
-
-Melihat status dan logs:
-```bash
-docker compose ps
-docker compose logs -f
-docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
-```
-
-Stop cluster:
-```bash
-docker compose down
-```
-
-> Catatan: pastikan environment variables di `docker/docker-compose.yml` mengisi `CLUSTER_NODES` dengan host yang dapat di-resolve oleh container lain (contoh: `node-1:dist-node-1:6000,node-2:dist-node-2:6010,node-3:dist-node-3:6020`) dan bahwa aplikasi bind ke `0.0.0.0` di dalam container.
-
-### Menjalankan Demo / Benchmark Singkat
-
-Demo standalone:
-```bash
-python benchmarks/demo_standalone.py
-```
-
-Benchmark dengan Locust:
-```bash
-# Pastikan locust terinstall
-locust -f benchmarks/benchmark_runner.py
-# Buka UI Locust: http://localhost:8089
-```
-
-Untuk test load internal atau pengukuran lebih canggih, gunakan konfigurasi Locust scenario di `benchmarks/`.
-
-## 📊 Pengujian Sistem
-
-```bash
-# Run unit/integration tests
-pytest
-
-# Coverage report (opsional)
-pytest --cov=src --cov-report=html
-
-# Run specific suites
-pytest tests/unit/
-pytest tests/integration/
-pytest tests/performance/
-```
-
-## 📖 Dokumentasi
-
-- `docs/architecture.md`
-- `docs/api_spec.yaml`
-- `docs/deployment_guide.md`
-- `docs/performance_analysis.md`
-
-## ⚠️ Catatan Penting (Debugging & Gotchas)
-
-- CLUSTER_NODES harus konsisten: format yang digunakan dalam project adalah `node-id:host:port`. Jangan mencampur format atau menambahkan token lain yang menyebabkan kesalahan resolusi (contoh bermasalah: `node-3:dist-node-3:5000` ditempatkan di field yang salah).
-- Jika mendapatkan `socket.gaierror: [Errno -2] Name or service not known` → periksa nilai `CLUSTER_NODES` dan pastikan hostnya dapat di-resolve dari container/node.
-- Jika `curl http://localhost:6000/status` dari host menunjukkan "Empty reply from server" namun container logs menunjukkan `200`:
-  - Bisa terjadi restart/flapping pada container (healthcheck bermasalah).
-  - Cek `docker ps` apakah container sedang restart.
-  - Pastikan server bind ke `0.0.0.0` agar port yang dipublish dapat diakses dari host.
-- Untuk membedakan masalah network vs aplikasi, selalu bandingkan:
-  - `curl` dari host ke published port, dan
-  - `curl` dari dalam container (`docker exec -it <container> curl -v http://127.0.0.1:<port>/status`)
-- Healthchecks di `docker-compose` yang terlalu agresif dapat menyebabkan restart loop. Tambahkan `interval`, `timeout`, `retries` yang moderat.
-
-Langkah debugging cepat:
-```bash
-# Periksa container/status
-docker compose -f docker/docker-compose.yml ps
-docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
-
-# Ambil logs node tertentu
-docker compose -f docker/docker-compose.yml logs --no-color --tail=200 node1
-# atau
-docker logs --tail 200 dist-node-1
-
-# Tes endpoint dari host
-curl -v http://localhost:6000/status
-
-# Tes dari dalam container
-docker compose -f docker/docker-compose.yml exec node1 curl -v http://127.0.0.1:6000/status
-
-# Periksa listener & proses di dalam container
-docker compose -f docker/docker-compose.yml exec node1 ss -ltnp
-docker compose -f docker/docker-compose.yml exec node1 ps aux | egrep 'python|aiohttp|uvloop'
-```
-
-## 📈 Hasil Pengujian Performa (contoh)
-
-> Nilai-nilai di bawah hanya contoh yang dihasilkan dalam environment pengembangan; angka nyata tergantung hardware, konfigurasi network, dan pengaturan benchmark.
-
-### Pengujian Single Node
-- Throughput: 1000 pesan/detik
-- Latency: 5ms (p95)
-- Lock Acquisition: 3ms
-- Queue Processing: 800 pesan/detik
-
-### Pengujian 3 Node Cluster
-- Throughput: 2500 pesan/detik total
-- Latency: 15ms (p95)
-- Lock Acquisition: 10ms
-- Queue Processing: 2000 pesan/detik
-
-## 🛠️ Teknologi yang Digunakan
-
-- **Language**: Python 3.10+
-- **Async Framework**: asyncio, aiohttp
-- **Messaging**: ZeroMQ
-- **State Management**: Redis
-- **Testing**: pytest, locust
-- **Containerization**: Docker, Docker Compose
-- **Monitoring**: Prometheus (optional)
-
-## 📝 License
-
-MIT License - see LICENSE file for details
-
-## 🙏 Acknowledgments
-
-- Mata Kuliah: Sistem Parallel dan Terdistribusi
-- Referensi: Raft Consensus Paper, Redis Documentation
-- Inspirasi: Distributed Systems: Principles and Paradigms
+Dokumentasi ini memberikan panduan singkat yang terstruktur untuk fitur, skrip, demo, pengujian, dan langkah-langkah praktis agar Anda bisa menjalankan, menguji, dan merekam demonstrasi sistem ini.
 
 ---
 
-Note: Project ini dikembangkan untuk keperluan akademik. Untuk production use, diperlukan additional hardening and security measures.
+## Isi singkat README (quick links)
+- Deskripsi singkat & tujuan
+- Prasyarat
+- Daftar fitur
+- Skrip & demo penting (apa yang untuk dijalankan)
+- Cara menjalankan (Docker / Local / In-process)
+- Cara menjalankan benchmark & menyimpan output
+- Menjalankan test suite
+- Troubleshooting umum
+- Lokasi output (JSON / PNG)
+- Tips rekaman video & link panduan
+
+---
+
+## 1. Tujuan proyek
+Tujuan: menyediakan rangkaian eksperimen dan tooling untuk mempelajari perilaku Raft pada kasus nyata — sinkronisasi akses (locks), antrian terdistribusi (queue), dan caching koheren (cache). Kode di repository ini bersifat educational / demo — bukan ready-for-production.
+
+---
+
+## 2. Prasyarat
+- Python 3.8+ (direkomendasikan 3.10+)
+- pip
+- virtualenv / venv
+- Docker & Docker Compose (jika ingin menjalankan container)
+- (Opsional) WSL2 pada Windows untuk kemudahan Docker + bash utilities
+- Redis (container disediakan di docker-compose)
+
+---
+
+## 3. Fitur utama
+- Implementasi Raft (minimal/demo) untuk leader election dan replikasi log
+- HTTP API pada tiap node untuk primitive:
+  - Locks: acquire / release (shared/exclusive)
+  - Queue: enqueue / dequeue
+  - Cache: put / get (sederhana)
+- Beberapa tooling benchmark:
+  - `distributed_http_benchmark.py` — HTTP benchmark client (locks, queue, cache)
+  - `inprocess_cluster_runner.py` — jalankan cluster in-process + benchmark
+  - `auto_distributed_test_runner.py` — runner otomatis (local atau docker) untuk seluruh role
+- Demo helpers:
+  - `benchmarks/demo_cluster_client.py` — client helper yang dipakai benchmark
+  - `benchmarks/demo_standalone.py` — contoh demo singkat
+- Utilities untuk plotting hasil benchmark (PNG) dan menyimpan JSON
+
+---
+
+## 4. Struktur file penting (ringkas)
+- `docker/docker-compose.yml` — konfigurasi Docker Compose untuk menjalankan cluster 3-node + redis
+- `src/consensus/raft.py` — implementasi Raft (demo)
+- `src/api/http_server.py` — HTTP API handlers (status, lock, queue, cache)
+- `scripts/start_cluster_api.py` — script untuk memulai node (dipakai oleh runner)
+- `benchmarks/scenarios/` — folder berisi runner dan benchmark clients:
+  - `distributed_http_benchmark.py`
+  - `inprocess_cluster_runner.py`
+  - `auto_distributed_test_runner.py`
+  - `client_benchmark.py`, `extra_plots.py`, dsb.
+- `benchmarks/VIDEO_DEMO_INSTRUCTIONS.md` — panduan video demo dan runbook
+- `benchmarks/VIDEO_SCRIPT_VERBATIM.md` — naskah verbatim untuk rekaman video
+
+---
+
+## 5. Cara men-setup environment (singkat)
+1. Clone:
+```/dev/null/README.md#L1-3
+git clone <repo-url>
+cd <repo-root>
+```
+
+2. Virtual environment & dependencies:
+```/dev/null/README.md#L4-9
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Linux / macOS:
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+3. Salin .env contoh (opsional, jika ada):
+```/dev/null/README.md#L10-12
+cp .env.example .env
+# lalu edit .env sesuai kebutuhan (API ports, CLUSTER_NODES, REDIS_HOST)
+```
+
+---
+
+## 6. Cara menjalankan (pilih satu workflow)
+
+Catatan: semua perintah diasumsikan dijalankan dari root repository.
+
+A. Docker (3-node container)
+1. Build & start:
+```
+cd docker
+docker compose build --no-cache
+docker compose up -d --force-recreate
+```
+
+3. Verifikasi:
+```
+docker compose ps
+docker compose logs --tail=200 dist-node-1 dist-node-2 dist-node-3
+# cek HTTP status (default ports: 6000,6010,6020)
+curl http://127.0.0.1:6000/status
+curl http://127.0.0.1:6010/status
+curl http://127.0.0.1:6020/status
+```
+
+4. Stop:
+```
+cd docker
+docker compose down
+```
+
+Catatan: Pastikan `CLUSTER_NODES` di `docker/docker-compose.yml` berisi host yang dapat di-resolve oleh container (gunakan container hostnames seperti `dist-node-1` di string CLUSTER_NODES bila perlu).
+
+---
+
+B. Local (subprocess per node) — debugging
+Jalankan tiga proses node pada terminal berbeda (contoh untuk lock nodes):
+```
+python -m src.nodes.base_node --node-id node-1 --host 0.0.0.0 --port 6000 --cluster-nodes node-1:localhost:6000,node-2:localhost:6010,node-3:localhost:6020
+python -m src.nodes.base_node --node-id node-2 --host 0.0.0.0 --port 6010 --cluster-nodes node-1:localhost:6000,node-2:localhost:6010,node-3:localhost:6020
+python -m src.nodes.base_node --node-id node-3 --host 0.0.0.0 --port 6020 --cluster-nodes node-1:localhost:6000,node-2:localhost:6010,node-3:localhost:6020
+```
+
+Kemudian cek status:
+```
+curl http://localhost:6000/status
+curl http://localhost:6010/status
+```
+
+---
+
+C. In-process (recommended untuk demo cepat)
+Runner otomatis memulai cluster (di satu proses Python), menunggu stabil, menjalankan benchmark singkat, lalu stop:
+```
+python benchmarks/scenarios/inprocess_cluster_runner.py lock --locks 500 --concurrency 30
+# Ganti 'lock' menjadi 'queue' atau 'cache' untuk masing-masing primitive.
+```
+
+---
+
+## 7. Menjalankan benchmark HTTP (client)
+- Distributed HTTP benchmark client:
+```
+python benchmarks/scenarios/distributed_http_benchmark.py \
+  --nodes 127.0.0.1:6000 127.0.0.1:6010 127.0.0.1:6020 \
+  --locks 500 --queue 500 --cache 500 --concurrency 30
+```
+- Auto runner (local atau docker mode) untuk menjalankan semua role berurutan:
+```
+python benchmarks/scenarios/auto_distributed_test_runner.py --mode local --locks 500 --queue 500 --cache 500 --concurrency 30
+# atau
+python benchmarks/scenarios/auto_distributed_test_runner.py --mode docker --reuse-cluster --locks 500 --queue 500 --cache 500
+```
+
+Output default:
+- JSON hasil: `benchmarks/scenarios/distributed_http_benchmark_results.json`
+- Auto runner hasil per-role: `benchmarks/scenarios/results/distributed_benchmark_<role>_<ts>.json`
+- In-process results: `benchmarks/scenarios/inprocess_results_<role>_<ts>.json`
+- Plot PNG: `benchmarks/scenarios/plots/*.png`
+
+---
+
+## 8. Menjalankan test suite
+- Unit & integration:
+```/dev/null/README.md#L48-51
+pytest
+# atau spesifik:
+pytest tests/unit/
+pytest tests/integration/
+```
+- Coverage (jika terpasang):
+```
+pytest --cov=src --cov-report=html
+```
+
+---
+
+## 9. Skrip & file demo yang sering dipakai (ringkasan)
+- `scripts/start_cluster_api.py` — helper untuk start cluster per-role (dipakai oleh auto runner)
+- `benchmarks/demo_cluster_client.py` — client helper (ClusterClient)
+- `benchmarks/demo_standalone.py` — demo singkat
+- `benchmarks/scenarios/`:
+  - `distributed_http_benchmark.py` — client HTTP untuk benchmark
+  - `inprocess_cluster_runner.py` — start in-process cluster + benchmark
+  - `auto_distributed_test_runner.py` — orchestration local/docker untuk semua role
+  - `client_benchmark.py` / `load_test_scenarios.py` — skenario client-only (opsional)
+  - `extra_plots.py` — plotting tambahan
+- `benchmarks/VIDEO_DEMO_INSTRUCTIONS.md` — runbook perekaman video
+- `benchmarks/VIDEO_SCRIPT_VERBATIM.md` — naskah verbatim rekaman
+
+---

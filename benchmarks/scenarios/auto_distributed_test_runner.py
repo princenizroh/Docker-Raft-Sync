@@ -1,33 +1,3 @@
-#!/usr/bin/env python3
-"""
-Auto Distributed Test Runner
-
-Creates 3-node clusters (lock, queue, cache) in sequence (either local processes or Docker),
-runs the HTTP-based benchmarks for the active primitive, collects and saves results.
-
-Usage:
-    python benchmarks/scenarios/auto_distributed_test_runner.py [--mode docker|local]
-        [--locks N] [--queue N] [--cache N] [--concurrency N]
-        [--wait-start SECS] [--output-dir PATH] [--reuse-cluster]
-
-Examples:
-    # Run local clusters (uses scripts/start_cluster_api.py) and run 500 lock ops, 500 queue, 500 cache:
-    python benchmarks/scenarios/auto_distributed_test_runner.py --mode local --locks 500 --queue 500 --cache 500
-
-Notes:
-- Local mode launches `python scripts/start_cluster_api.py <role>` as subprocesses for each role.
-  The start script will be launched with SKIP_DOCKER_CHECK=1 to avoid requiring docker.
-- Docker mode attempts to run the docker compose file in ./docker. It expects the compose to expose
-  HTTP APIs on the expected ports (see mapping below). If your docker images are not configured
-  to start role-specific nodes, prefer `--mode local`.
-- Expected HTTP API endpoints by role (this runner's assumptions):
-    lock  -> 127.0.0.1:6000, 127.0.0.1:6010, 127.0.0.1:6020
-    queue -> 127.0.0.1:7001, 127.0.0.1:7002, 127.0.0.1:7003
-    cache -> 127.0.0.1:8001, 127.0.0.1:8002, 127.0.0.1:8003
-
-This file does not execute anything by itself when installed; run it from the repository root.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -43,29 +13,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# Ensure repo root is importable for internal modules
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-# Import the distributed benchmark runner components
 try:
-    # Import the async test runner function
     from benchmarks.scenarios.distributed_http_benchmark import run_all_tests
 except Exception:
-    # If import fails, we will still create the script with helpful error messages at runtime.
     run_all_tests = None  # type: ignore
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("auto_test_runner")
 
 
-# Role -> expected HTTP endpoints mapping used by this script
 ROLE_ENDPOINTS = {
     "lock": ["127.0.0.1:6000", "127.0.0.1:6010", "127.0.0.1:6020"],
-    # Note: start_cluster_api config uses node.port + 1000 for queue/cache http by design in the repository
     "queue": ["127.0.0.1:7001", "127.0.0.1:7002", "127.0.0.1:7003"],
     "cache": ["127.0.0.1:8001", "127.0.0.1:8002", "127.0.0.1:8003"],
 }
@@ -170,7 +133,6 @@ def start_local_cluster_process(role: str) -> subprocess.Popen:
 
     env = os.environ.copy()
     env["SKIP_DOCKER_CHECK"] = "1"
-    # Use a dedicated PYTHONUNBUFFERED to get logs immediately if user inspects stdout/stderr
     env["PYTHONUNBUFFERED"] = "1"
 
     logger.info("Starting local cluster for role=%s with cmd: %s", role, " ".join(cmd))
@@ -220,7 +182,6 @@ def try_run_docker_compose() -> bool:
         logger.error("docker directory not found at %s", docker_dir)
         return False
 
-    # Try 'docker compose' first
     cmds = [
         ["docker", "compose", "up", "-d", "--build"],
         ["docker-compose", "up", "-d", "--build"],
@@ -271,7 +232,6 @@ async def run_role_test(
     docker_started = False
 
     try:
-        # Start cluster
         if mode == "local":
             proc = start_local_cluster_process(role)
         else:
@@ -286,7 +246,6 @@ async def run_role_test(
                     "Assuming docker cluster already running (reuse_cluster=True)"
                 )
 
-        # Wait for endpoints to be responsive
         logger.info(
             "Waiting up to %ss for endpoints to respond: %s", wait_start, endpoints
         )
@@ -295,7 +254,6 @@ async def run_role_test(
             logger.error(
                 "Endpoints did not respond within timeout; collecting logs (if available) and aborting"
             )
-            # Try to gather some quick output from the subprocess if present
             if proc and proc.stdout:
                 logger.info("---- Last 400 chars of cluster process output ----")
                 try:
@@ -328,7 +286,6 @@ async def run_role_test(
             concurrency,
         )
 
-        # Run the async runner function directly to get structured results
         results = await run_all_tests(
             nodes=nodes,
             locks=locks_ops,
@@ -338,7 +295,6 @@ async def run_role_test(
             cache_hit_ratio=0.8,
         )
 
-        # results is expected to be a dict (serialized by the runner). Save to file with timestamp and role
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         output_dir.mkdir(parents=True, exist_ok=True)
         out_file = output_dir / f"distributed_benchmark_{role}_{ts}.json"
@@ -352,7 +308,6 @@ async def run_role_test(
         return results
 
     finally:
-        # Stop cluster if we started it (unless user asked to keep it running)
         if mode == "local" and proc:
             if no_stop:
                 logger.info(
@@ -362,11 +317,9 @@ async def run_role_test(
             else:
                 stop_process(proc, f"local-cluster-{role}")
         elif mode == "docker" and docker_started and not reuse_cluster:
-            # Try to bring down the compose stack
             try:
                 docker_dir = REPO_ROOT / "docker"
                 logger.info("Stopping docker compose stack (down)...")
-                # Try both commands
                 for cmd in (["docker", "compose", "down"], ["docker-compose", "down"]):
                     try:
                         subprocess.run(

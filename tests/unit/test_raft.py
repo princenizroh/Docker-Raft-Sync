@@ -1,7 +1,3 @@
-"""
-Unit tests for Raft Consensus Algorithm
-"""
-
 import pytest
 import asyncio
 from src.consensus.raft import RaftNode, RaftState, LogEntry
@@ -9,7 +5,6 @@ from src.consensus.raft import RaftNode, RaftState, LogEntry
 
 @pytest.mark.asyncio
 async def test_raft_initialization():
-    """Test Raft node initialization"""
     node = RaftNode(
         node_id="node-1",
         cluster_nodes=["node-2", "node-3"]
@@ -24,7 +19,6 @@ async def test_raft_initialization():
 
 @pytest.mark.asyncio
 async def test_raft_start_stop():
-    """Test Raft node start and stop"""
     node = RaftNode(
         node_id="node-1",
         cluster_nodes=["node-2", "node-3"]
@@ -39,7 +33,6 @@ async def test_raft_start_stop():
 
 @pytest.mark.asyncio
 async def test_raft_election_timeout():
-    """Test election timeout triggers election"""
     node = RaftNode(
         node_id="node-1",
         cluster_nodes=["node-2", "node-3"],
@@ -56,14 +49,10 @@ async def test_raft_election_timeout():
     
     await node.start()
     
-    # Wait for election timeout
     await asyncio.sleep(0.5)
     
-    # Should become candidate
     assert node.state == RaftState.CANDIDATE
     assert node.current_term > 0
-    
-    # Should have sent RequestVote messages
     assert len(messages_sent) > 0
     
     await node.stop()
@@ -71,7 +60,6 @@ async def test_raft_election_timeout():
 
 @pytest.mark.asyncio
 async def test_raft_vote_request():
-    """Test vote request handling"""
     node = RaftNode(
         node_id="node-1",
         cluster_nodes=["node-2", "node-3"]
@@ -86,7 +74,6 @@ async def test_raft_vote_request():
     
     await node.start()
     
-    # Simulate vote request from another node
     await node.handle_request_vote({
         'term': 1,
         'candidate_id': 'node-2',
@@ -94,7 +81,6 @@ async def test_raft_vote_request():
         'last_log_term': 0
     })
     
-    # Should grant vote
     assert len(messages_sent) > 0
     vote_response = messages_sent[0][1]
     assert vote_response['type'] == 'vote_response'
@@ -105,7 +91,6 @@ async def test_raft_vote_request():
 
 @pytest.mark.asyncio
 async def test_raft_log_append():
-    """Test log appending"""
     node = RaftNode(
         node_id="node-1",
         cluster_nodes=["node-2", "node-3"]
@@ -113,11 +98,9 @@ async def test_raft_log_append():
     
     await node.start()
     
-    # Force node to be leader
     node.state = RaftState.LEADER
     node.current_term = 1
     
-    # Append log entry
     success = await node.append_log("test_command", {"data": "test"})
     
     assert success is True
@@ -129,7 +112,6 @@ async def test_raft_log_append():
 
 
 def test_raft_status():
-    """Test getting node status"""
     node = RaftNode(
         node_id="node-1",
         cluster_nodes=["node-2", "node-3"]

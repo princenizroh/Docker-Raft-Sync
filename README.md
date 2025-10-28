@@ -222,6 +222,12 @@ docker compose build --no-cache
 docker compose up -d --force-recreate
 ```
 
+2. issue
+Jika mengalami issue dan tidak mendapatkan leader
+```
+docker compose restart
+```
+
 3. Verifikasi:
 ```
 docker compose ps
@@ -316,5 +322,27 @@ pytest --cov=src --cov-report=html
   - `extra_plots.py` — plotting tambahan
 - `benchmarks/VIDEO_DEMO_INSTRUCTIONS.md` — runbook perekaman video
 - `benchmarks/VIDEO_SCRIPT_VERBATIM.md` — naskah verbatim rekaman
+
+---
+
+## 🛠️ Teknologi yang Digunakan
+
+- **Language**: Python 3.10+
+- **Async Framework**: asyncio, aiohttp
+- **Messaging**: ZeroMQ
+- **State Management**: Redis
+- **Testing**: pytest
+- **Containerization**: Docker, Docker Compose
+- **Monitoring**: Prometheus (optional)
+
+## 📝 License
+
+MIT License - see LICENSE file for details
+
+## 🙏 Acknowledgments
+
+- Mata Kuliah: Sistem Parallel dan Terdistribusi
+- Referensi: Raft Consensus Paper, Redis Documentation
+- Inspirasi: Distributed Systems: Principles and Paradigms
 
 ---

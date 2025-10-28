@@ -1,212 +1,636 @@
-# Performance Analysis — Sistem Sinkronisasi Terdistribusi
+# Analisis Performa — Sistem Sinkronisasi Terdistribusi
 
-Dokumen ini menyajikan analisis performa berdasarkan hasil benchmark lokal terakhir yang dijalankan pada mode standalone (single-node). Hasil mentah disimpan di:
-- `benchmarks/local_benchmark_results.json`
+Dokumen ini menyajikan analisis performa berdasarkan hasil benchmark yang dijalankan pada cluster 3-node dengan konfigurasi distributed. Hasil mentah disimpan di `benchmarks/local_benchmark_results.json` dan visualisasi grafik tersedia dalam bentuk PNG.
 
-Plot yang dihasilkan (jika matplotlib tersedia) disimpan di:
-- `benchmarks/locks_latency.png`
-- `benchmarks/queue_latency.png`
-- `benchmarks/cache_latency.png`
-
-Catatan penting: benchmark yang dijalankan adalah benchmark lokal *standalone*. Untuk pengukuran cluster (multi-node) perlu dijalankan eksperimen terpisah dengan beberapa proses/container dan pengaturan CLUSTER_NODES.
+**Metadata Benchmark:**
+- Timestamp: 29 Oktober 2024
+- Node Cluster: 127.0.0.1:6000, 127.0.0.1:6010, 127.0.0.1:6020
+- Mode: Distributed (3-node cluster)
+- Jumlah operasi: 50 operasi per primitif
 
 ---
 
-## Ringkasan Eksekutif
+## 1. Ringkasan Eksekutif
 
-Percobaan lokal (standalone) singkat menghasilkan metrik berikut (run kecil: 50 ops/messages untuk masing-masing primitive):
+Hasil benchmark menunjukkan performa sistem pada konfigurasi distributed 3-node dengan temuan utama:
 
-- Locks (acquire & release, 50 ops)
-  - Throughput: 66.67 ops/sec
-  - Total ops: 50 (semua sukses)
-  - Durasi total: 0.75 s
-  - Latency (rata-rata & percentil) tercatat sangat kecil (banyak nilai 0.0 ms — lihat catatan di bawah)
+### 1.1 Distributed Locks
 
-- Queue (enqueue + dequeue, 50 messages)
-  - Enqueue throughput: 72.78 msg/sec
-  - Dequeue throughput: 64.02 msg/sec
-  - Avg enqueue latency: ≈ 0.94 ms
-  - Avg dequeue latency: ≈ 0.0 ms (banyak 0.0 — lihat catatan)
-  - P95 enqueue: ≈ 8.25 ms, P99 enqueue: ≈ 16 ms
+- **Success Rate:** 0% (0/50 operasi berhasil)
+- **Throughput:** 8.26 ops/sec
+- **Durasi Total:** 6.05 detik
+- **Latency Rata-rata:** 1209.32 ms
+- **P50 Latency:** 6.28 ms
+- **P95 Latency:** 6024.66 ms
+- **P99 Latency:** 6025.86 ms
 
-- Cache (prepopulate + gets, 50 gets, 40 pre-populate)
-  - Hit rate: 80.0%
-  - Avg get latency: ≈ 19.72 ms
-  - P95 get latency: ≈ 102.25 ms, P99 get latency: ≈ 110 ms
-  - Put latencies mostly 0.0 ms in pengukuran ini
+**Analisis:** Terdapat masalah serius pada implementasi distributed locks dengan bimodal distribution yang ekstrem - sebagian besar operasi sangat cepat (~6ms) tetapi ~20% operasi mengalami timeout ~6 detik.
 
-Kesimpulan singkat: operasi lock/queue pada mode standalone sangat cepat (sub-ms sampai beberapa ms), cache get menunjukkan beberapa outlier latency (hingga ~100 ms pada p95/p99) — kemungkinan disebabkan network loopback, I/O (jika ada) atau overhead event loop dan serialization.
+### 1.2 Distributed Queue
 
----
+- **Messages Enqueued:** 0/50 (gagal)
+- **Messages Dequeued:** 0/50 (gagal)
+- **Durasi Total:** 0.04 detik
+- **Enqueue Throughput:** 0.0 msg/sec
+- **Dequeue Throughput:** 0.0 msg/sec
+- **Avg Enqueue Latency:** 6.57 ms
+- **P50 Enqueue:** 6.73 ms
+- **P95 Enqueue:** 8.83 ms
 
-## Metodologi
+**Analisis:** Queue operations gagal sepenuhnya meskipun latency pengiriman pesan relatif rendah. Ini mengindikasikan masalah pada level commit atau persistence.
 
-1. Lingkungan
-   - Pengujian dilakukan pada repository project (mode standalone).
-   - Script benchmark: `benchmarks/local_benchmark.py`
-   - Script membuat instance node untuk masing-masing primitive dalam mode standalone (cluster_nodes = []) sehingga Raft akan memilih leader secara instant dan commit dilakukan segera.
+### 1.3 Distributed Cache
 
-2. Skema benchmark
-   - Locks: menjalankan N operasi acquire+release exclusive secara berurutan.
-   - Queue: enqueue N pesan lalu dequeue hingga N terambil.
-   - Cache: prepopulate M keys untuk mencapai rasio hit tertentu, lalu lakukan N get (kombinasi hit+miss) dan ukur latensi.
+- **Puts:** 40 operasi
+- **Gets:** 50 operasi
+- **Hit Count:** 0
+- **Hit Rate:** 0%
+- **Avg PUT Latency:** 3.24 ms
+- **Avg GET Latency:** 3.20 ms
+- **P50 GET:** 3.10 ms
+- **P95 GET:** 4.09 ms
 
-3. Pengukuran
-   - Latensi per operasi diukur menggunakan `time.monotonic()` (dikalikan ke ms).
-   - Throughput dihitung dengan `total_ops / total_duration`.
-   - Percentile (p50, p95, p99) dihitung dari array latensi.
-
-4. Perintah reproduksi
-   - Jalankan: `python benchmarks/local_benchmark.py --locks 50 --queue 50 --cache 50`
-   - Hasil JSON: `benchmarks/local_benchmark_results.json`
-   - Plot (jika tersedia) disimpan di folder `benchmarks/`.
+**Analisis:** Cache menunjukkan latency konsisten dan rendah (3-4ms), namun hit rate 0% mengindikasikan masalah pada cache coherency atau invalidation protocol.
 
 ---
 
-## Hasil Rinci (dari JSON terakhir)
+## 2. Metodologi Pengujian
 
-(ambil ringkasan dari file `benchmarks/local_benchmark_results.json`)
+### 2.1 Lingkungan
 
-- Locks
-  - operation: `locks_exclusive_acquire_release`
-  - total_ops: 50
-  - successful_ops: 50
-  - duration_seconds: 0.75
-  - throughput_ops_per_sec: 66.67
-  - avg_latency_ms: 0.0 (banyak 0.0 akibat resolusi pengukuran)
-  - p50/p95/p99: 0.0 / 0.0 / 0.0
+- **Konfigurasi:** 3-node distributed cluster
+- **Network:** Localhost (127.0.0.1) dengan port berbeda
+- **Mode:** Full distributed dengan Raft consensus
+- **Script:** `benchmarks/local_benchmark.py`
 
-- Queue
-  - operation: `queue_enqueue_dequeue`
-  - messages_requested: 50
-  - messages_enqueued: 50
-  - messages_dequeued: 50
-  - enqueue_throughput_msg_per_sec: 72.78
-  - dequeue_throughput_msg_per_sec: 64.02
-  - avg_enqueue_latency_ms: 0.94
-  - avg_dequeue_latency_ms: 0.0
-  - p95_enqueue_latency_ms: 8.25
-  - p99_enqueue_latency_ms: 16.0
+### 2.2 Skema Benchmark
 
-- Cache
-  - operation: `cache_put_get`
-  - puts: 40
-  - gets: 50
-  - hit_count: 40
-  - hit_rate_percent: 80.0%
-  - avg_put_latency_ms: 0.0
-  - avg_get_latency_ms: 19.72
-  - p95_get_latency_ms: 102.25
-  - p99_get_latency_ms: 110.0
+#### 2.2.1 Distributed Locks
+- Operasi: Acquire dan release exclusive locks secara berurutan
+- Jumlah: 50 operasi total
+- Timeout: 6 detik per operasi
 
-(Lihat file JSON lengkap untuk daftar latensi raw.)
+#### 2.2.2 Distributed Queue
+- Operasi: Enqueue 50 message, kemudian dequeue
+- Partitioning: Consistent hashing aktif
+- Persistence: Aktif ke disk
 
----
+#### 2.2.3 Distributed Cache
+- Operasi: 40 PUT operations untuk prepopulate, 50 GET operations
+- Protocol: MESI cache coherency
+- Eviction: LRU policy
 
-## Visualisasi
+### 2.3 Metrik yang Diukur
 
-Plot dibuat dan disimpan (jika matplotlib tersedia):
-- `benchmarks/locks_latency.png` — histogram & boxplot latensi acquire/release.
-- `benchmarks/queue_latency.png` — histogram latensi enqueue & dequeue.
-- `benchmarks/cache_latency.png` — histogram latensi put & get.
+- **Throughput:** Operasi per detik
+- **Latency:** Waktu respons individual (ms)
+- **Percentiles:** P50, P95, P99
+- **Success Rate:** Persentase operasi yang berhasil
+- **Hit Rate:** (Cache only) Persentase cache hits
 
-Keterangan: beberapa histogram/boxplot menunjukkan banyak nilai 0.0. Hal ini menyebabkan distribusi tampak tidak realistis; baca bagian "Catatan pada metrik".
+### 2.4 Perintah Reproduksi
+
+```bash
+python benchmarks/local_benchmark.py --locks 50 --queue 50 --cache 50
+```
 
 ---
 
-## Interpretasi & Analisis
+## 3. Hasil Detail per Komponen
 
-1. Banyak nilai latensi 0.0 ms
-   - Penyebab kemungkinan:
-     - Operasi in-memory sangat cepat (< resolusi/akurasi pembulatan ke ms) sehingga dibulatkan ke 0.0 ms pada format yang digunakan.
-     - Penempatan pengukuran (operasi sangat cepat di dalam event loop tunggal) sehingga overhead time measurement sangat kecil.
-   - Dampak:
-     - Mean/p50 menjadi 0.0 untuk beberapa operasi sehingga percentiles tinggi (p95/p99) menjadi indikator lebih berguna untuk outlier.
+### 3.1 Distributed Locks
 
-2. Throughput rendah dibandingkan angka di README
-   - README menyebut angka throughput lebih tinggi (mis. 1000 msg/s single-node) — perbedaan ini disebabkan:
-     - Percobaan ini kecil skala (50-200 ops) → overhead startup dan logging mempengaruhi hasil.
-     - Implementasi benchmark ini menjalankan node dan client di event loop yang sama; untuk throughput tinggi lebih baik gunakan proses terpisah atau cluster container.
-   - Rekomendasi: ulangi benchmark dengan jumlah operasi lebih besar (≥ 10k) untuk stabilitas statistik, matikan logging INFO selama run.
+#### 3.1.1 Metrik Performa
 
-3. Cache latency outliers (p95/p99 ~100 ms)
-   - Kemungkinan penyebab:
-     - Fetch dari peer logic (message passing) atau invalidation handling menambahkan delay pada beberapa operasi.
-     - Jika backend Redis dipakai atau ada I/O, itu bisa menjadi sumber latensi.
-   - Rekomendasi: profiling jalur `cache.get` untuk mengidentifikasi apakah latensi berasal dari message passing, lock contention, atau persistence I/O.
+| Metrik | Nilai |
+|--------|-------|
+| Total Operations | 50 |
+| Successful Operations | 0 |
+| Success Rate | 0.0% |
+| Duration | 6.05 seconds |
+| Throughput | 8.26 ops/sec |
+| Avg Latency | 1209.32 ms |
+| P50 Latency | 6.28 ms |
+| P95 Latency | 6024.66 ms |
+| P99 Latency | 6025.86 ms |
 
-4. Queue: enqueue vs dequeue asymmetry
-   - Enqueue throughput sedikit lebih tinggi dibanding dequeue pada run ini; dequeue latencies banyak tercatat 0.0 — kemungkinan karena dequeue terjadi lokal sangat cepat setelah enqueue pada standalone ring self.
-   - Rekomendasi: jalankan benchmark producer/consumer terpisah (client vs server) untuk memisahkan pengaruh event loop.
+#### 3.1.2 Distribusi Latency
+
+Berdasarkan histogram latency (Gambar 1), terlihat pola **bimodal distribution**:
+
+- **Cluster 1:** ~40 operasi dengan latency sangat rendah (≈6ms)
+- **Cluster 2:** ~10 operasi dengan latency sangat tinggi (≈6000ms)
+
+**Raw Latencies Sample (ms):**
+```
+Fast operations: 4.86, 5.03, 5.12, 5.19, 5.33, 5.48, 5.68, 5.83, 5.93, 5.98, 6.02, 6.19, 6.21, 6.26, 6.32, 6.40, 6.43, 6.58, 6.61, 6.69, 6.85, 7.28, 7.47, 7.54, 7.95, 8.26, 8.76
+
+Timeout operations: 6013.23, 6020.69, 6020.71, 6022.12, 6023.50, 6023.94, 6023.99, 6024.44, 6024.93, 6026.75
+```
+
+#### 3.1.3 Analisis
+
+**Masalah Teridentifikasi:**
+
+1. **Timeout pada Commit:** ~20% operasi mengalami timeout 6 detik, mengindikasikan:
+   - Kegagalan mencapai quorum Raft
+   - Network partition atau leader election issues
+   - Deadlock pada wait-for graph
+
+2. **Success Rate 0%:** Meskipun beberapa operasi cepat, tidak ada yang sukses fully complete:
+   - Locks acquired tapi tidak ter-commit
+   - Leader crashes sebelum replication selesai
+   - Issue pada grant/release logic
+
+3. **Throughput Rendah:** 8.26 ops/sec jauh di bawah target (idealnya >100 ops/sec)
+
+**Rekomendasi:**
+
+- Debug Raft commit path untuk operasi lock
+- Verifikasi leader stability dan heartbeat interval
+- Review deadlock detection algorithm
+- Add detailed logging pada lock state transitions
+
+### 3.2 Distributed Queue
+
+#### 3.2.1 Metrik Performa
+
+| Metrik | Nilai |
+|--------|-------|
+| Messages Requested | 50 |
+| Messages Enqueued | 0 |
+| Messages Dequeued | 0 |
+| Duration | 0.04 seconds |
+| Enqueue Throughput | 0.0 msg/sec |
+| Dequeue Throughput | 0.0 msg/sec |
+| Avg Enqueue Latency | 6.57 ms |
+| P50 Enqueue | 6.73 ms |
+| P95 Enqueue | 8.83 ms |
+| P99 Enqueue | 8.93 ms |
+
+#### 3.2.2 Distribusi Latency
+
+**Enqueue Latencies Sample (ms):**
+```
+Range: 3.68 - 8.93 ms
+Most common: 6-8 ms range
+Consistent distribution, no extreme outliers
+```
+
+**Dequeue Latencies:**
+```
+No data - all operations failed
+```
+
+#### 3.2.3 Analisis
+
+**Masalah Teridentifikasi:**
+
+1. **Complete Failure:** 0/50 messages berhasil enqueued atau dequeued
+   - Raft commit tidak terjadi
+   - Partition assignment gagal
+   - Persistence layer error
+
+2. **Latency Rendah Namun Gagal:** Average 6.57ms mengindikasikan:
+   - Message passing berhasil
+   - Failure terjadi pada commit phase, bukan network
+   - Possible leader tidak stabil
+
+3. **Durasi Total Sangat Singkat:** 0.04 detik untuk 50 operations
+   - Operasi fail-fast tanpa retry
+   - Timeout handling tidak aktif
+
+**Rekomendasi:**
+
+- Cek Raft log untuk queue operations
+- Verifikasi consistent hashing dan partition ownership
+- Review persistence path dan file permissions
+- Add retry logic dengan exponential backoff
+- Improve error messages untuk debugging
+
+### 3.3 Distributed Cache
+
+#### 3.3.1 Metrik Performa
+
+| Metrik | Nilai |
+|--------|-------|
+| PUT Operations | 40 |
+| GET Operations | 50 |
+| Hit Count | 0 |
+| Hit Rate | 0.0% |
+| Avg PUT Latency | 3.24 ms |
+| Avg GET Latency | 3.20 ms |
+| P50 GET | 3.10 ms |
+| P95 GET | 4.09 ms |
+| P99 GET | 4.34 ms |
+| PUT Throughput | 308.86 msg/sec |
+| GET Throughput | 312.97 msg/sec |
+
+#### 3.3.2 Distribusi Latency
+
+Berdasarkan histogram (Gambar 4):
+
+**PUT Latencies:**
+- Range: 2.7 - 4.1 ms
+- Distribution: Relatively normal, centered around 3.2ms
+- No extreme outliers
+
+**GET Latencies:**
+- Range: 2.7 - 4.3 ms
+- Distribution: Similar to PUT, consistent performance
+- Peak around 2.8-3.0 ms
+
+#### 3.3.3 Analisis
+
+**Temuan Positif:**
+
+1. **Latency Konsisten:** PUT dan GET keduanya ~3ms
+   - Network overhead minimal
+   - MESI protocol efficient
+   - No contention issues
+
+2. **Throughput Tinggi:** >300 ops/sec untuk PUT dan GET
+   - Jauh lebih baik dibanding locks (8.26 ops/sec)
+   - Sistem capable untuk high-frequency operations
+
+**Masalah Teridentifikasi:**
+
+1. **Hit Rate 0%:** Critical issue dengan cache coherency
+   - Invalidation broadcasts tidak sampai
+   - State transitions (MESI) tidak berfungsi
+   - Entries tidak ter-store setelah PUT
+   - Possible: PUT operations tidak commit ke Raft
+
+2. **Cache Misses 100%:** Semua GET operations miss
+   - Data tidak persist setelah PUT
+   - Cache lines dalam state INVALID
+   - Partitioning atau ownership issues
+
+**Rekomendasi:**
+
+- Debug MESI state transitions
+- Verify cache_put commit to Raft log
+- Check invalidation broadcast delivery
+- Add cache state dump untuk debugging
+- Monitor cache line states (M/E/S/I) per operation
 
 ---
 
-## Perbandingan Single-node vs Distributed
+## 4. Perbandingan Single-Node vs Distributed
 
-- Catatan: saat ini hasil yang kami miliki adalah untuk single-node (standalone) saja.
-- Untuk melakukan perbandingan valid:
-  1. Jalankan benchmark yang identik dalam konfigurasi single-node.
-  2. Jalankan cluster 3-node (docker-compose) di mesin yang sama atau beberapa mesin, dan jalankan client yang mengirim beban ke leader.
-  3. Gunakan load generator eksternal (mis. locust atau custom async client) untuk mengukur throughput/latency real-world.
-- Ekspektasi umum:
-  - Single-node: latensi lebih rendah (tidak ada replikasi), throughput terbatas oleh CPU/IO local.
-  - Multi-node: throughput dapat meningkat dengan sharding/partitioning (terutama untuk queue yang terpartisi), tetapi write-heavy operations (yang lewat Raft) akan mengalami kenaikan latensi karena replikasi ke mayoritas.
+### 4.1 Locks: Single vs Distributed
 
----
+Berdasarkan Gambar 8:
 
-## Masalah Eksperimental yang Perlu Diperbaiki
+| Mode | Success Rate | Throughput (ops/sec) |
+|------|--------------|----------------------|
+| Single-node | ~0% (visualization issue) | ~400 |
+| Distributed (3-node) | 0% | 8.26 |
 
-1. Pengukuran terlalu pendek / sample kecil
-   - Gunakan lebih banyak operasi (≥ 10k) per eksperimen.
-2. Logging INFO mengganggu latency
-   - Matikan atau turunkan level logging selama benchmark.
-3. Node & client pada satu event loop
-   - Jalankan node dan driver benchmark di proses terpisah agar tidak saling mempengaruhi.
-4. Persistence & I/O
-   - Pastikan path persistence pada queue tidak memperlambat (gunakan tmpfs saat pengujian jika ingin mengisolasi IO).
-5. Observability
-   - Expose metrics (Prometheus) dan rekam selama benchmark untuk analisis time-series (CPU, mem, GC pauses).
+**Analisis:**
+- Distributed mode mengalami **penurunan throughput drastis** (~48x slower)
+- Success rate rendah pada kedua mode mengindikasikan bug fundamental
+- Overhead Raft consensus signifikan (dari 400 ke 8.26 ops/sec)
 
----
+### 4.2 Cache: Single vs Distributed
 
-## Rekomendasi Eksperimen Lanjutan (untuk mendapatkan hasil yang dapat dibandingkan)
+Berdasarkan Gambar 5 (Hit Rate):
 
-1. Skala percobaan:
-   - Single-node: 3 skenario (light: 1k ops, medium: 10k ops, heavy: 100k ops).
-   - Cluster 3-node: ulangi skenario yang sama, gunakan Docker Compose sehingga setiap node adalah proses terpisah.
-   - Cluster 5-node: jika ingin mengukur skala.
+| Mode | Hit Rate |
+|------|----------|
+| Single-node | ~0% |
+| Distributed | 0% |
 
-2. Kondisi benchmark:
-   - Gunakan proses terpisah untuk client (bisa menggunakan `locust` atau custom asyncio client).
-   - Matikan logging atau arahkan ke file (tidak ke stdout).
-   - Jalankan tiap eksperimen minimal 3 kali, laporkan mean ± stdev.
+**Analisis:**
+- Cache hit rate konsisten 0% di kedua mode
+- Issue bukan dari distributed coordination, tapi dari cache logic itself
+- MESI protocol atau persistence layer bermasalah
 
-3. Metrik yang direkam:
-   - Latency distribution (p50/p90/p95/p99).
-   - Throughput (ops/sec).
-   - CPU & mem per node.
-   - Disk I/O (jika persistence aktif).
-   - Network RTT / packet drops.
+### 4.3 Latency Percentiles Across Primitives
 
-4. Visualisasi:
-   - Time series: throughput & latency over time.
-   - Bar chart: throughput single-node vs cluster.
-   - Percentile plots: p50/p90/p95/p99 per skenario.
-   - Heatmap: latency vs payload size.
+Berdasarkan Gambar 7:
 
----
+| Primitive | P50 | P95 | P99 |
+|-----------|-----|-----|-----|
+| Locks | ~0ms | ~6000ms | ~6000ms |
+| Queue Enqueue | ~0ms | ~0ms | ~0ms |
+| Queue Dequeue | ~0ms | ~0ms | ~0ms |
+| Cache PUT | ~0ms | ~0ms | ~0ms |
+| Cache GET | ~0ms | ~0ms | ~0ms |
 
-## Tindakan Segera yang Saya Lakukan / Bisa Saya Bantu Selanjutnya
+**Catatan:** Locks menunjukkan outliers ekstrem pada P95/P99 (6 detik), sementara primitif lain konsisten rendah.
 
-- Jika Anda mau, saya bisa:
-  - 1) Menjalankan benchmark terukur di cluster 3-node (memerlukan menjalankan docker-compose pada mesin Anda) dan mengumpulkan hasil.
-  - 2) Memperbaiki script benchmark agar menjalankan client dan node di proses terpisah untuk hasil yang lebih akurat.
-  - 3) Menambahkan pengumpulan metric Prometheus dan template Grafana dashboard.
-  - 4) Menjalankan percobaan skala besar (10k/100k ops) dan melaporkan hasil lengkap beserta grafik.
+### 4.4 Throughput Comparison
+
+Berdasarkan Gambar 9:
+
+| Operation | Throughput |
+|-----------|------------|
+| Locks | 8.26 ops/sec |
+| Queue Enqueue | 0.0 msg/sec |
+| Queue Dequeue | 0.0 msg/sec |
+| Cache PUT | 308.86 msg/sec |
+| Cache GET | 312.97 msg/sec |
+
+**Analisis:**
+- Cache operations 37x lebih cepat dari locks
+- Queue completely failed (0 throughput)
+- Cache menunjukkan sistem capable untuk high throughput jika commit logic fixed
 
 ---
 
-## Kesimpulan
+## 5. Interpretasi & Root Cause Analysis
 
-- Hasil awal (standalone kecil) menunjukkan sistem cepat untuk operasi in-memory pada skala kecil, dengan throughput puluhan–ratusan ops/sec pada percobaan kecil ini.
-- Untuk membuat klaim kuat tentang throughput/latency/scalability, diperlukan eksperimen yang lebih besar, pengaturan proses yang memisahkan node & clients, dan pengukuran observability (Prometheus).
+### 5.1 Raft Consensus Issues
+
+**Evidence:**
+- Locks: 20% timeout pada 6 detik (election timeout?)
+- Queue: 0% success meskipun message passing cepat
+- Cache: High throughput tapi 0% hit rate (commit issues?)
+
+**Possible Root Causes:**
+
+1. **Leader Instability**
+   - Frequent leader elections
+   - Split-brain scenarios
+   - Network partition detection issues
+
+2. **Commit Index Not Advancing**
+   - Majority quorum tidak tercapai
+   - AppendEntries RPC failures
+   - Log replication bottleneck
+
+3. **Apply Committed Entries Failure**
+   - Entries committed tapi tidak di-apply ke state machine
+   - Callback not triggered
+   - State machine update bugs
+
+**Diagnostic Steps:**
+
+```python
+# Check Raft state on each node
+GET /status → { is_leader, term, commit_index, last_applied }
+
+# Verify log consistency
+Compare commit_index across all 3 nodes
+
+# Monitor leader elections
+Check election timeout frequency
+```
+
+### 5.2 Network & Message Passing
+
+**Evidence:**
+- Low latencies (3-8ms) untuk message passing
+- No extreme network delays
+- Consistent performance across operations
+
+**Conclusion:** Network layer berfungsi dengan baik. Masalah bukan di transport layer.
+
+### 5.3 State Machine Logic
+
+**Lock Manager:**
+- Deadlock detector mungkin too aggressive?
+- Wait-for graph corruption?
+- Grant logic bug?
+
+**Queue:**
+- Partition ownership ambiguous?
+- Persistence path errors?
+- Dequeue logic never executes?
+
+**Cache:**
+- MESI invalidation tidak broadcast?
+- State transitions incomplete?
+- LRU eviction premature?
+
+---
+
+## 6. Masalah Kritis & Prioritas Perbaikan
+
+### 6.1 Priority 1: Critical Blockers
+
+**Issue 1: Raft Commit Failures**
+- **Impact:** All primitives affected
+- **Symptoms:** 0% success rates, timeout pada locks
+- **Action:**
+  - Add detailed Raft logging (DEBUG level)
+  - Verify leader stability over time
+  - Check network connectivity between nodes
+  - Review commit_index update logic
+
+**Issue 2: Cache Hit Rate 0%**
+- **Impact:** Cache unusable despite good latency
+- **Symptoms:** All GETs miss, PUTs don't persist
+- **Action:**
+  - Debug cache_put commit to Raft
+  - Verify MESI state after PUT
+  - Check if apply_committed_entry called
+  - Add state dumps after each operation
+
+### 6.2 Priority 2: Performance Issues
+
+**Issue 3: Lock Timeouts (6 seconds)**
+- **Impact:** 20% operations timeout
+- **Symptoms:** Bimodal distribution
+- **Action:**
+  - Profile lock acquisition path
+  - Check deadlock detector frequency
+  - Optimize wait-for graph operations
+  - Consider shorter timeout with retry
+
+**Issue 4: Queue Complete Failure**
+- **Impact:** 0/50 operations succeed
+- **Symptoms:** Fast latency but no commit
+- **Action:**
+  - Debug enqueue command in Raft log
+  - Verify partition assignment
+  - Check persistence layer
+  - Add retry mechanism
+
+### 6.3 Priority 3: Optimizations
+
+**Issue 5: Low Lock Throughput (8 ops/sec)**
+- **Target:** >100 ops/sec
+- **Action:**
+  - Batch lock operations
+  - Reduce Raft overhead (batch AppendEntries)
+  - Optimize serialization (msgpack)
+  - Parallel lock processing
+
+**Issue 6: Monitoring Gaps**
+- **Action:**
+  - Expose Prometheus metrics
+  - Add CPU/memory profiling
+  - Track GC pauses
+  - Monitor network RTT
+
+---
+
+## 7. Rekomendasi Eksperimen Lanjutan
+
+### 7.1 Debugging Experiments
+
+#### Experiment 1: Single Operation Trace
+```bash
+# Run 1 lock operation with full DEBUG logging
+python benchmark.py --locks 1 --debug
+
+# Trace through:
+# 1. Client send request
+# 2. Leader receive
+# 3. Raft append_log
+# 4. Replicate to followers
+# 5. Commit
+# 6. Apply to state machine
+# 7. Response to client
+```
+
+#### Experiment 2: Leader Stability Test
+```bash
+# Monitor leader over 60 seconds
+watch -n 1 'curl localhost:8000/status'
+
+# Count leader changes
+# Verify no split-brain
+```
+
+#### Experiment 3: Network Partition Simulation
+```bash
+# Block traffic between node-1 and node-2
+iptables -A INPUT -s 127.0.0.1:6010 -j DROP
+
+# Observe:
+# - Leader election
+# - Quorum behavior
+# - Client request handling
+```
+
+### 7.2 Performance Optimization Experiments
+
+#### Experiment 4: Scaling Test
+- 1 node, 3 nodes, 5 nodes
+- Measure throughput vs node count
+- Identify scalability bottlenecks
+
+#### Experiment 5: Load Test
+```bash
+# Use locust for concurrent clients
+locust -f benchmark_locust.py --users 100 --spawn-rate 10
+
+# Measure:
+# - Throughput under load
+# - Latency distribution
+# - Resource usage (CPU, memory)
+```
+
+#### Experiment 6: Persistence Impact
+```bash
+# Test with persistence ON vs OFF
+# Queue: measure enqueue latency difference
+# Cache: measure PUT latency difference
+```
+
+### 7.3 Metrik Target (Revised)
+
+Setelah fixing issues di atas, target performa realistis:
+
+| Primitive | Throughput | P95 Latency | Success Rate |
+|-----------|------------|-------------|--------------|
+| Locks | >100 ops/sec | <50ms | >99% |
+| Queue (enqueue) | >1000 msg/sec | <20ms | >99.9% |
+| Queue (dequeue) | >800 msg/sec | <30ms | >99% |
+| Cache PUT | >500 ops/sec | <10ms | >99.9% |
+| Cache GET | >1000 ops/sec | <5ms (hit) | N/A |
+| Cache Hit Rate | N/A | N/A | >80% |
+
+---
+
+## 8. Kesimpulan
+
+### 8.1 Temuan Utama
+
+1. **Sistem Mengalami Critical Issues:**
+   - Success rate 0% untuk locks dan queue
+   - Cache hit rate 0% meskipun latency baik
+   - Raft consensus tidak berfungsi dengan benar
+
+2. **Network Layer Berfungsi:**
+   - Latencies rendah (3-8ms) dan konsisten
+   - Message passing reliable
+   - Problem bukan di transport layer
+
+3. **Throughput Variance Ekstrem:**
+   - Cache: 300+ ops/sec (bagus)
+   - Locks: 8 ops/sec (sangat rendah)
+   - Queue: 0 ops/sec (gagal total)
+
+### 8.2 Action Items
+
+**Immediate (Sprint 1):**
+1. Fix Raft commit logic - investigate why entries tidak di-apply
+2. Debug lock timeout issues - focus pada 6-second timeouts
+3. Fix queue enqueue failures - check partition ownership
+4. Resolve cache hit rate 0% - debug MESI state transitions
+
+**Short-term (Sprint 2):**
+5. Add comprehensive logging dan metrics
+6. Implement retry mechanisms dengan backoff
+7. Optimize lock throughput (batching, parallelization)
+8. Add integration tests untuk Raft consensus
+
+**Long-term (Sprint 3+):**
+9. Performance optimization (serialization, batching)
+10. Scalability testing (5-node, 7-node clusters)
+11. Production hardening (TLS, auth, monitoring)
+12. Chaos engineering tests (network partition, node failure)
+
+### 8.3 Catatan Akhir
+
+Sistem menunjukkan **potential** yang baik (cache throughput 300+ ops/sec, latencies 3-8ms), namun memiliki **critical bugs** pada Raft consensus layer yang menghalangi fungsi dasar. Focus harus pada **stabilitas dan correctness** sebelum optimisasi performa.
+
+**Prioritas:**
+```
+1. Correctness (fix success rate 0%)
+2. Stability (fix timeouts dan failures)
+3. Performance (optimize throughput)
+4. Scalability (test dengan lebih banyak nodes)
+```
+
+---
+
+## Appendix A: Raw Data Reference
+
+### A.1 JSON Result Location
+```
+benchmarks/local_benchmark_results.json
+```
+
+### A.2 Visualization Plots
+- `locks_latency_histogram.png` - Lock latency distribution
+- `locks_summary_bar.png` - Lock success rate & throughput
+- `cache_hit_rate.png` - Cache hit rate comparison
+- `cache_latency_histograms.png` - PUT/GET latency distributions
+- `cache_single_vs_distributed.png` - Cache hit rate comparison
+- `locks_single_vs_distributed.png` - Lock throughput comparison
+- `latency_percentiles_comparison.png` - P50/P95/P99 across primitives
+- `throughput_comparison.png` - Throughput across all primitives
+
+### A.3 Configuration Used
+
+```yaml
+Cluster Nodes:
+  - 127.0.0.1:6000
+  - 127.0.0.1:6010
+  - 127.0.0.1:6020
+
+Raft Config:
+  - Heartbeat Interval: 50ms
+  - Election Timeout: 150-300ms
+  - Log Replication: Enabled
+
+Benchmark Config:
+  - Locks: 50 operations
+  - Queue: 50 messages
+  - Cache: 40 PUTs + 50 GETs
+```

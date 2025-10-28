@@ -1,8 +1,3 @@
-"""
-Integration Tests for Distributed System
-Tests multi-component interactions
-"""
-
 import pytest
 import asyncio
 from src.consensus.raft import RaftNode, RaftState
@@ -11,7 +6,6 @@ from src.consensus.raft import RaftNode, RaftState
 @pytest.mark.asyncio
 async def test_three_node_cluster():
     """Test 3-node Raft cluster formation"""
-    # Create 3-node cluster
     nodes = [
         RaftNode('node-1', ['node-2', 'node-3']),
         RaftNode('node-2', ['node-1', 'node-3']),
